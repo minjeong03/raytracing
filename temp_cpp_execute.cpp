@@ -22,24 +22,21 @@ namespace h_shape{
     FVec3 center;
     float radius;
   };
-
-  bool sphere_test_inside(const sphere& sphere, FVec3 point)
-  {
-    FVec3 pc = point - sphere.center;
-    return (fvec3_dot(pc,pc) <= sphere.radius*sphere.radius);
-  }
 }
 
 namespace h_intersect{
-  struct ray_intersect_result
+  typedef float hit_test_fuc(const h_ray::ray&, void*);
+
+  struct hitable
   {
-    float t;
-    bool hit;
-    bool inside;
+    hit_test_fuc* hit_func;
+    void* hitable_obj;
   };
 
-  float intersect_ray_sphere(const h_ray::ray& ray, const h_shape::sphere& sphere)
+  float intersect_ray_sphere(const h_ray::ray& ray, void* pSphere)
   {
+    h_shape::sphere& sphere = *(h_shape::sphere*)(pSphere);
+
     FVec3 oc = ray.origin - sphere.center;
     float a = fvec3_dot(ray.dir, ray.dir);
     float b = 2 * fvec3_dot(ray.dir, oc);
@@ -71,8 +68,8 @@ namespace h_app{
     h_shape::sphere sphere;
     sphere.center = {0,0,-1};
     sphere.radius = 0.5f;
-    
-    float t = h_intersect::intersect_ray_sphere(ray, sphere);
+
+    float t = h_intersect::intersect_ray_sphere(ray, &sphere);
     if( t > 0.0f )
     {
       FVec3  normal = h_ray::point_at_parameter(ray, t)-sphere.center;
