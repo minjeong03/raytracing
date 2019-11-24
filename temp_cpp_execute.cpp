@@ -33,17 +33,22 @@ namespace h_rayhit{
     FVec3 normal;
   };
 
-  typedef bool hit_test_fuc(void* obj, const h_ray::ray&, float t_min, float t_max, hit_record& record);
+  typedef bool test_hit_fuc(void* obj, const h_ray::ray&, float t_min, float t_max, hit_record& record);
 
   struct hitable
   {
-    hit_test_fuc* hit_func;
+    test_hit_fuc* hit_func;
     void* hitable_obj;
-
-    hitable(void* hitable_object, hit_test_fuc* hit_test_function)
-      :hitable_obj(hitable_object), hit_func(hit_test_function)
-    { }
   };
+
+hitable create_hitable(void* hitable_object, test_hit_fuc* hit_test_function)
+{
+  hitable obj;
+  obj.hitable_obj = hitable_object;
+  obj.hit_func = hit_test_function;
+  return obj;
+}
+
 
   bool test_world_ray(/*std::vector<hitable>*/void* world, const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
   {
@@ -70,7 +75,7 @@ namespace h_rayhit{
     return hit_anything;
   }
 
-  bool test_sphere_ray(void* obj, 
+  bool test_sphere_ray(/*sphere**/void* obj, 
   const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
   {
     if( !obj ) return false;
@@ -162,14 +167,13 @@ int main() {
   obj2.center = {0, -100.5, -1};
   obj2.radius = 100;
   std::vector<h_rayhit::hitable> objs_in_world;
-  objs_in_world.push_back( h_rayhit::hitable(&obj1, h_rayhit::test_sphere_ray) );
-  objs_in_world.push_back( h_rayhit::hitable(&obj2, h_rayhit::test_sphere_ray) );
+  objs_in_world.push_back( h_rayhit::create_hitable(&obj1, h_rayhit::test_sphere_ray) );
+  objs_in_world.push_back( h_rayhit::create_hitable(&obj2, h_rayhit::test_sphere_ray) );
 
-  h_rayhit::hitable world(&objs_in_world, h_rayhit::test_world_ray);
+  h_rayhit::hitable world = h_rayhit::create_hitable(&objs_in_world, h_rayhit::test_world_ray);
 
-  // r = (1, 0]
-  // g = [0, 1)
-  // b = 0.2;
+  // u = (1, 0]
+  // v = (0, 1]
   for (int j = ny-1; j >= 0; j--) {
     for(int i = 0; i < nx; i++)   {
       float u = float(i) / float(nx);
