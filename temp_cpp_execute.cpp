@@ -24,8 +24,15 @@ namespace h_shape{
   };
 }
 
-namespace h_intersect{
-  typedef float hit_test_fuc(const h_ray::ray&, void*);
+namespace h_rayhit{
+  struct hit_record
+  {
+    float t;
+    FVec3 p;
+    FVec3 normal;
+  };
+
+  typedef bool hit_test_fuc(void* obj, const h_ray::ray&, float t_min, float t_max, hit_record& record);
 
   struct hitable
   {
@@ -33,9 +40,12 @@ namespace h_intersect{
     void* hitable_obj;
   };
 
-  float intersect_ray_sphere(const h_ray::ray& ray, void* pSphere)
+  bool test_sphere_ray(void* obj, 
+  const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
   {
-    h_shape::sphere& sphere = *(h_shape::sphere*)(pSphere);
+    if( !obj ) return false;
+
+    h_shape::sphere& sphere = *(h_shape::sphere*)(obj);
 
     FVec3 oc = ray.origin - sphere.center;
     float a = fvec3_dot(ray.dir, ray.dir);
@@ -48,14 +58,22 @@ namespace h_intersect{
       // ray and sphere 
       // don't intersect
       if(discriminant < 0) 
-      {
-        return -1;
-      } 
+        return false;
+      
       // intersect
       else 
       {
-        return (-b -sqrt(discriminant)) / (2.0*a);
+        float t = ( - b - sqrt(discriminant)) / (2*a);
+        if( t > t_max || t < t_min)
+          return false;
+
+
+        record.t = t;
+        record.p = h_ray::point_at_parameter(ray, t);        
+        record.normal = fvec3_normalize( record.p - sphere.center );
+        return true;
       }
+      return false;
   }
 }
 
@@ -69,16 +87,14 @@ namespace h_app{
     sphere.center = {0,0,-1};
     sphere.radius = 0.5f;
 
-    float t = h_intersect::intersect_ray_sphere(ray, &sphere);
-    if( t > 0.0f )
+    h_rayhit::hit_record record;
+    if( h_rayhit::test_sphere_ray(&sphere, ray, 0, 10000, record) )
     {
-      FVec3  normal = h_ray::point_at_parameter(ray, t)-sphere.center;
-      normal = fvec3_normalize(normal);
-      normal = (normal + white) * 0.5f;
+      FVec3 normal = (record.normal + white) * 0.5f;
       return normal;
     }
 
-    t = 0.5f * (ray.dir.y + 1.0f);
+    float t = 0.5f * (ray.dir.y + 1.0f);
 
     FVec3 base = {0.5f, 0.7f, 1.0f};
 
