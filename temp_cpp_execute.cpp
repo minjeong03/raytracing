@@ -9,7 +9,7 @@ namespace h_ray{
     FVec3 dir;
   };
 
-  FVec3 point_at_parameter(float t, const ray& ray)
+  FVec3 point_at_parameter(const ray& ray, float t)
   {
     FVec3 p = ray.origin + ray.dir*t;
     return p;
@@ -38,7 +38,7 @@ namespace h_intersect{
     bool inside;
   };
 
-  bool intersect_ray_sphere(const h_ray::ray& ray, const h_shape::sphere& sphere)
+  float intersect_ray_sphere(const h_ray::ray& ray, const h_shape::sphere& sphere)
   {
     FVec3 oc = ray.origin - sphere.center;
     float a = fvec3_dot(ray.dir, ray.dir);
@@ -47,44 +47,42 @@ namespace h_intersect{
 
     // use quadratic formula to test p = (origin + dir*t) and sphere for all t
     float discriminant = b*b - 4*a*c;
-    return (discriminant > 0);
 
-    /*
-      float t = 0; 
       // ray and sphere 
       // don't intersect
-      if(discriminant < 0)
+      if(discriminant < 0) 
       {
-      
-      }
-      // intersect at a point
-      else if(discriminant == 0)
+        return -1;
+      } 
+      // intersect
+      else 
       {
-
+        return (-b -sqrt(discriminant)) / (2.0*a);
       }
-      // intersect at two points
-      else
-      {
-
-      }
-    */
   }
 }
 
 namespace h_app{
   FVec3 to_color(const h_ray::ray& ray)
   {
-    FVec3 unit_dir = fvec3_normalize(ray.dir);
-    float t = 0.5f * (unit_dir.y + 1.0f); // map y [-1, 1] to [0, 1]
+    FVec3 white = {1.0f, 1.0f, 1.0f};
+    FVec3 black = {0.0f, 0.0f, 0.0f};
     
     h_shape::sphere sphere;
     sphere.center = {0,0,-1};
     sphere.radius = 0.5f;
     
-    if(h_intersect::intersect_ray_sphere(ray, sphere))
-      return {1,0,0};
-            
-    FVec3 white = {1.0f, 1.0f, 1.0f};
+    float t = h_intersect::intersect_ray_sphere(ray, sphere);
+    if( t > 0.0f )
+    {
+      FVec3  normal = h_ray::point_at_parameter(ray, t)-sphere.center;
+      normal = fvec3_normalize(normal);
+      normal = (normal + white) * 0.5f;
+      return normal;
+    }
+
+    t = 0.5f * (ray.dir.y + 1.0f);
+
     FVec3 base = {0.5f, 0.7f, 1.0f};
 
     return  white*(1.0f - t) + base*t;
