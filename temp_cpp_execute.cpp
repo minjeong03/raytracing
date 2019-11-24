@@ -1,6 +1,7 @@
 #include <stdio.h>
 #define HIMATH_IMPL
 #include "himath.h"
+#include <vector>
 
 namespace h_ray{
   struct ray
@@ -38,13 +39,41 @@ namespace h_rayhit{
   {
     hit_test_fuc* hit_func;
     void* hitable_obj;
+
+    hitable(void* hitable_object, hit_test_fuc* hit_test_function)
+      :hitable_obj(hitable_object), hit_func(hit_test_function)
+    { }
   };
+
+  bool test_world_ray(/*std::vector<hitable>*/void* world, const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
+  {
+    if( !world ) return false;
+    std::vector<hitable>& objs = *((std::vector<hitable>*)(world));
+
+    hit_record temp;
+    bool hit_anything = false;
+    double closest_t = t_max;
+
+    for( hitable& h : objs )
+    {
+      if(h.hit_func(h.hitable_obj, ray, t_min, t_max, temp))
+      {
+        hit_anything = true;
+        if(closest_t > temp.t)
+        {
+          closest_t = temp.t;
+          record = temp;
+          record.t = closest_t;
+        }
+      }
+    }
+    return hit_anything;
+  }
 
   bool test_sphere_ray(void* obj, 
   const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
   {
     if( !obj ) return false;
-
     h_shape::sphere& sphere = *(h_shape::sphere*)(obj);
 
     FVec3 oc = ray.origin - sphere.center;
@@ -61,15 +90,23 @@ namespace h_rayhit{
         return false;
       
       // intersect
+      // sqrt_d == 0 -> only one  
+      // sqrt_d > 0
+      //      t1 | t2 | hit    
+      // min  -  |  - | false      ==> meaning t1 < t2 < min
+      // min  +  |  - | impossible ==> meaning t2 < min < t1 
+      // max  -  |  + | true       ==> meaning t1 < min < t2
+      // max  +  |  + | false      ==> meaning max < t1 < t2 
       else 
       {
-        float t = ( - b - sqrt(discriminant)) / (2*a);
-        if( t > t_max || t < t_min)
+        float sqrt_d = sqrt(discriminant);
+        float t1 = ( - b - sqrt_d ) / (2*a);
+        float t2 = ( - b + sqrt_d ) / (2*a);
+        if( t1 > t_max || t2 < t_min )
           return false;
 
-
-        record.t = t;
-        record.p = h_ray::point_at_parameter(ray, t);        
+        record.t = (t1 < t_min ? t2 : t1);
+        record.p = h_ray::point_at_parameter(ray, record.t);        
         record.normal = fvec3_normalize( record.p - sphere.center );
         return true;
       }
@@ -78,17 +115,15 @@ namespace h_rayhit{
 }
 
 namespace h_app{
-  FVec3 to_color(const h_ray::ray& ray)
+  FVec3 to_color(const h_ray::ray& ray, h_rayhit::hitable* world)
   {
     FVec3 white = {1.0f, 1.0f, 1.0f};
     FVec3 black = {0.0f, 0.0f, 0.0f};
     
-    h_shape::sphere sphere;
-    sphere.center = {0,0,-1};
-    sphere.radius = 0.5f;
-
+    float min_t = 0;
+    float max_t = 10000;
     h_rayhit::hit_record record;
-    if( h_rayhit::test_sphere_ray(&sphere, ray, 0, 10000, record) )
+    if( world->hit_func(world->hitable_obj, ray, min_t, max_t, record) )
     {
       FVec3 normal = (record.normal + white) * 0.5f;
       return normal;
@@ -120,6 +155,18 @@ int main() {
   h_ray::ray ray;
   ray.origin = camera_pos;
 
+  h_shape::sphere obj1;
+  obj1.center = {0,0,-1};
+  obj1.radius = 0.5f;
+  h_shape::sphere obj2;
+  obj2.center = {0, -100.5, -1};
+  obj2.radius = 100;
+  std::vector<h_rayhit::hitable> objs_in_world;
+  objs_in_world.push_back( h_rayhit::hitable(&obj1, h_rayhit::test_sphere_ray) );
+  objs_in_world.push_back( h_rayhit::hitable(&obj2, h_rayhit::test_sphere_ray) );
+
+  h_rayhit::hitable world(&objs_in_world, h_rayhit::test_world_ray);
+
   // r = (1, 0]
   // g = [0, 1)
   // b = 0.2;
@@ -130,7 +177,7 @@ int main() {
 
       // dir's transition = from top-left to bottom-right
       ray.dir = lower_left_corner + horizontal * u + vertical * v;
-      FVec3 color = h_app::to_color(ray);
+      FVec3 color = h_app::to_color(ray, &world);
 
       int ir = int(255.99f*color.x);
       int ig = int(255.99f*color.y);
