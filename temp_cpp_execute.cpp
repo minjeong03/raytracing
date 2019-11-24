@@ -2,6 +2,17 @@
 #define HIMATH_IMPL
 #include "himath.h"
 #include <vector>
+#include <stdlib.h>
+#include <time.h>
+
+namespace h_random {
+  float randomf(void)
+  {
+    float v = rand();
+    float m = RAND_MAX + 1;
+    return v / m;   
+  }
+}
 
 namespace h_ray{
   struct ray
@@ -41,14 +52,13 @@ namespace h_rayhit{
     void* hitable_obj;
   };
 
-hitable create_hitable(void* hitable_object, test_hit_fuc* hit_test_function)
-{
-  hitable obj;
-  obj.hitable_obj = hitable_object;
-  obj.hit_func = hit_test_function;
-  return obj;
-}
-
+  hitable create_hitable(void* hitable_object, test_hit_fuc* hit_test_function)
+  {
+    hitable obj;
+    obj.hitable_obj = hitable_object;
+    obj.hit_func = hit_test_function;
+    return obj;
+  }
 
   bool test_world_ray(/*std::vector<hitable>*/void* world, const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
   {
@@ -119,6 +129,32 @@ hitable create_hitable(void* hitable_object, test_hit_fuc* hit_test_function)
   }
 }
 
+namespace h_camera {
+  struct camera
+  {
+    FVec3 lower_left_corner;
+    FVec3 horizontal;
+    FVec3 vertical;
+    FVec3 pos;
+  };
+
+  camera create_camera(FVec3 pos) {
+    camera cam;
+    cam.lower_left_corner = {-2, -1, -1};
+    cam.horizontal = {4, 0, 0};
+    cam.vertical = {0, 2, 0};
+    cam.pos = pos;
+    return cam;
+  }
+
+  h_ray::ray get_ray(const camera& camera, float u, float v) {
+    h_ray::ray ray; 
+    ray.origin = camera.pos;
+    ray.dir = camera.lower_left_corner + camera.horizontal*u + camera.vertical*v - camera.pos;
+    return ray;
+  }
+}
+
 namespace h_app{
   FVec3 to_color(const h_ray::ray& ray, h_rayhit::hitable* world)
   {
@@ -148,18 +184,14 @@ namespace h_app{
 // +y-up
 // +z-out of screen
 int main() {
+  srand(time(NULL));
+
   int nx = 200;
   int ny = 100;
   printf("P3\n%i %i\n255\n", nx, ny);
 
-  FVec3 lower_left_corner = {-2, -1, -1};
-  FVec3 horizontal = {4, 0, 0};
-  FVec3 vertical = {0, 2, 0};
-  FVec3 camera_pos = {0,0,0};
+  h_camera::camera camera = h_camera::create_camera({0,0,0});
   
-  h_ray::ray ray;
-  ray.origin = camera_pos;
-
   h_shape::sphere obj1;
   obj1.center = {0,0,-1};
   obj1.radius = 0.5f;
@@ -174,14 +206,21 @@ int main() {
 
   // u = (1, 0]
   // v = (0, 1]
+  const int sample = 100;
   for (int j = ny-1; j >= 0; j--) {
     for(int i = 0; i < nx; i++)   {
-      float u = float(i) / float(nx);
-      float v = float(j) / float(ny);
+      FVec3 color = {0,0,0};
 
-      // dir's transition = from top-left to bottom-right
-      ray.dir = lower_left_corner + horizontal * u + vertical * v;
-      FVec3 color = h_app::to_color(ray, &world);
+      for(int s = 0; s < sample; ++s) {
+        float u = ( float(i) + h_random::randomf() ) / float(nx);
+        float v = ( float(j) + h_random::randomf() ) / float(ny);
+
+        // dir's transition = from top-left to bottom-right
+        h_ray::ray ray = h_camera::get_ray(camera, u, v);
+        color += h_app::to_color(ray, &world);
+      }
+      color /= float(sample);
+
 
       int ir = int(255.99f*color.x);
       int ig = int(255.99f*color.y);
