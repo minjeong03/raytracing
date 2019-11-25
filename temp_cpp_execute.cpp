@@ -284,11 +284,12 @@ bool create_threads()
   int numH = 2;
   int numW = (NUM_THREADS >> 1);
 
+  // TODO(minjeong): test with diffrent methods to dividing section.
   for(int i = 0; i < numH; ++i)
   {
     for(int j = 0; j < numW; ++j)
     {
-      // TODO(minjeong): can reduce arg to int(section number or whatever)
+      // TODO(minjeong): can reduce arg to int(section number or whatever).
       thread_data* data = (thread_data*)malloc(sizeof(thread_data));
       data->x0 = (gAppData.w/numW) * j; 
       data->y0 = (gAppData.h/numH) * i;
