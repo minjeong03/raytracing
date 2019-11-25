@@ -1,11 +1,14 @@
-#include <cstdio>
+#include <stdio.h>
 #define HIMATH_IMPL
 #include <vector>
-#include <cstdlib>
-#include <ctime>
+#include <stdlib.h>
+#include <time.h>
 #include "himath.h"
-#include <climits>
+#include <limits.h>
+#include <process.h>
+#include <windows.h>
 
+#define NUM_THREADS 8
 namespace h_random {
   float randomf(void)
   {
@@ -179,6 +182,7 @@ namespace h_camera {
   }
 }
 
+
 namespace h_app{
   inline FVec3 color_gamma_2(FVec3 color)
   {
@@ -201,21 +205,119 @@ namespace h_app{
     FVec3 base = {0.5f, 0.7f, 1.0f};
     return  white*(1.0f - t) + base*t;
   }
+
+  struct app_data
+  {
+    h_camera::camera camera;
+    h_rayhit::hitable world;
+    int w;
+    int h;
+    int bytesPerPixel;
+    unsigned char* framebuffer;
+    HANDLE thread_handles[NUM_THREADS];
+  };
 }
 
+h_app::app_data gAppData;
+
+struct thread_data
+{
+  int x0;
+  int x1;
+  int y0;
+  int y1;
+};
+
+void write_buffer(int x0, int y0, int x1, int y1)
+{
+  const int sample = 100;  
+  
+  unsigned char* fb = gAppData.framebuffer;
+  for (int j = y0; j < y1; j++) {
+    for(int i = x0; i < x1; i++)   {
+      FVec3 color = {0,0,0}; 
+
+      for(int s = 0; s < sample; ++s) {
+        float u = ( float(i) + h_random::randomf() ) / float(gAppData.w);
+        float v = ( float(j) + h_random::randomf() ) / float(gAppData.h);
+        
+        h_ray::ray ray = h_camera::get_ray(gAppData.camera, u, v);
+        color += h_app::to_color(ray, gAppData.world);
+      }
+
+      int index = (j * gAppData.w * gAppData.bytesPerPixel) + (i * gAppData.bytesPerPixel);
+
+      color /= float(sample);
+      color = h_app::color_gamma_2(color);
+      fb[index + 0] = unsigned char(255.99f*color.x);
+      fb[index + 1] = unsigned char(255.99f*color.y);
+      fb[index + 2] = unsigned char(255.99f*color.z);
+    }
+  }
+}
+
+unsigned thread_main(void* args)
+{
+  thread_data* data = (thread_data*)args;
+
+  write_buffer(data->x0, data->y0, data->x1, data->y1);
+
+  free(data);
+  _endthreadex(0);
+  return 0;
+}
 
 // right handed coordinate
 // +x-right
 // +y-up
 // +z-out of screen
+
+void print_ppm()
+{
+  printf("P3\n%i %i\n255\n", gAppData.w, gAppData.h);
+
+  unsigned char* fb = gAppData.framebuffer;
+  for (int j = gAppData.h-1; j >= 0; j--) {
+    for(int i = 0; i < gAppData.w; i++)   {
+      int index = (j * gAppData.w * gAppData.bytesPerPixel ) + (i* gAppData.bytesPerPixel);
+      unsigned char ir = fb[index + 0];
+      unsigned char ig = fb[index + 1];
+      unsigned char ib = fb[index + 2];
+      printf("%i %i %i\n", ir, ig, ib);
+    }
+  }
+}
+
+bool create_threads()
+{
+  int numH = 2;
+  int numW = (NUM_THREADS >> 1);
+
+  for(int i = 0; i < numH; ++i)
+  {
+    for(int j = 0; j < numW; ++j)
+    {
+      thread_data* data = (thread_data*)malloc(sizeof(thread_data));
+      data->x0 = (gAppData.w/numW) * j; 
+      data->y0 = (gAppData.h/numH) * i;
+      data->x1 = (gAppData.w/numW) * (j+1); 
+      data->y1 = (gAppData.h/numH) * (i+1);
+
+      gAppData.thread_handles[i*numW + j] = (HANDLE)_beginthreadex( NULL, 0, thread_main, data, 0, NULL);
+      if( !gAppData.thread_handles[i*numW + j] )
+        return false;
+    }
+  }
+  return true;
+}
+
 int main() {
   srand(time(NULL));
 
-  int nx = 200;
-  int ny = 100;
-  printf("P3\n%i %i\n255\n", nx, ny);
-
-  h_camera::camera camera = h_camera::create_camera({0,0,0});
+  gAppData.w = 1600;
+  gAppData.h = 900;
+  gAppData.bytesPerPixel = 3;
+  gAppData.camera = h_camera::create_camera({0,0,0});
   
   h_shape::sphere obj1;
   obj1.center = {0,0,-1};
@@ -227,32 +329,30 @@ int main() {
   objs_in_world.push_back( h_rayhit::create_hitable(&obj1, h_rayhit::test_sphere_ray) );
   objs_in_world.push_back( h_rayhit::create_hitable(&obj2, h_rayhit::test_sphere_ray) );
 
-  h_rayhit::hitable world = h_rayhit::create_hitable(&objs_in_world, h_rayhit::test_world_ray);
+  // TODO(minjeong): can other threads access/refer to the alive variables(for sure) in main thread's stack using pointers passed by param? 
+  gAppData.world = h_rayhit::create_hitable(&objs_in_world, h_rayhit::test_world_ray);
+  gAppData.framebuffer = (unsigned char*)malloc(gAppData.w * gAppData.h * sizeof(unsigned char)* gAppData.bytesPerPixel);
 
-  // u = (1, 0]
-  // v = (0, 1]
-  const int sample = 100;
-  for (int j = ny-1; j >= 0; j--) {
-    for(int i = 0; i < nx; i++)   {
-      FVec3 color = {0,0,0};
-
-      for(int s = 0; s < sample; ++s) {
-        float u = ( float(i) + h_random::randomf() ) / float(nx);
-        float v = ( float(j) + h_random::randomf() ) / float(ny);
-
-        h_ray::ray ray = h_camera::get_ray(camera, u, v);
-        color += h_app::to_color(ray, world);
-      }
-      color /= float(sample);
-      color = h_app::color_gamma_2(color);
-
-      int ir = int(255.99f*color.x);
-      int ig = int(255.99f*color.y);
-      int ib = int(255.99f*color.z);
-
-      printf("%i %i %i\n", ir, ig, ib);
+  if(create_threads())
+  { 
+    //TODO(minjeong): wait until all threads finish their work
+    DWORD wait_result = WaitForMultipleObjects( NUM_THREADS, gAppData.thread_handles, TRUE, INFINITE);
+    if(wait_result != WAIT_OBJECT_0)
+    {
+      fprintf(stderr, "Failed waiting threads %i\n", wait_result);
+      fprintf(stderr, "failed with %i", GetLastError());
+      return -1;
     }
+
+    for(int i = 0; i < NUM_THREADS; ++i)
+      CloseHandle(gAppData.thread_handles);
+  }
+  else
+  {
+    write_buffer(0, 0, gAppData.w, gAppData.h);
   }
 
+  print_ppm();
+  free(gAppData.framebuffer);
   return 0;  
 }
