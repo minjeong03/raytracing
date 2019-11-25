@@ -125,7 +125,7 @@ namespace h_rayhit{
 
       // ray and sphere 
       // don't intersect
-      if(discriminant <= 0) 
+      if(discriminant < 0) 
         return false;
       
       // intersect
