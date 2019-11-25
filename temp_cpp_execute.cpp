@@ -1,9 +1,10 @@
-#include <stdio.h>
+#include <cstdio>
 #define HIMATH_IMPL
-#include "himath.h"
 #include <vector>
-#include <stdlib.h>
-#include <time.h>
+#include <cstdlib>
+#include <ctime>
+#include "himath.h"
+#include <climits>
 
 namespace h_random {
   float randomf(void)
@@ -11,6 +12,20 @@ namespace h_random {
     float v = rand();
     float m = RAND_MAX + 1;
     return v / m;   
+  }
+
+  FVec3 random_in_unit_sphere()
+  {
+    FVec3 rand = {0,0,0};
+    // [0,1) => [0, 2) => [-1, 1)
+    do
+    {
+      rand.x = 2*randomf() -1.f;
+      rand.y = 2*randomf() -1.f;
+      rand.z = 2*randomf() -1.f;   
+    }
+    while(fvec3_dot(rand, rand) >= 1.f);
+    return rand;  
   }
 }
 
@@ -25,6 +40,14 @@ namespace h_ray{
   {
     FVec3 p = ray.origin + ray.dir*t;
     return p;
+  }
+
+  ray create_ray(FVec3 origin, FVec3 dir)
+  {
+    ray r;
+    r.origin = origin;
+    r.dir = dir;
+    return r;
   }
 }
 
@@ -63,13 +86,14 @@ namespace h_rayhit{
   bool test_world_ray(/*std::vector<hitable>*/void* world, const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
   {
     if( !world ) return false;
-    std::vector<hitable>& objs = *((std::vector<hitable>*)(world));
+    const std::vector<hitable>& objs = *((std::vector<hitable>*)(world));
+    //std::vector<hitable>* objs = (std::vector<hitable>*)world;
 
     hit_record temp;
     bool hit_anything = false;
     double closest_t = t_max;
 
-    for( hitable& h : objs )
+    for( const hitable& h : objs )
     {
       if(h.hit_func(h.hitable_obj, ray, t_min, t_max, temp))
       {
@@ -89,7 +113,7 @@ namespace h_rayhit{
   const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
   {
     if( !obj ) return false;
-    h_shape::sphere& sphere = *(h_shape::sphere*)(obj);
+    const h_shape::sphere& sphere = *(h_shape::sphere*)(obj);
 
     FVec3 oc = ray.origin - sphere.center;
     float a = fvec3_dot(ray.dir, ray.dir);
@@ -101,7 +125,7 @@ namespace h_rayhit{
 
       // ray and sphere 
       // don't intersect
-      if(discriminant < 0) 
+      if(discriminant <= 0) 
         return false;
       
       // intersect
@@ -120,7 +144,7 @@ namespace h_rayhit{
         if( t1 > t_max || t2 < t_min )
           return false;
 
-        record.t = (t1 < t_min ? t2 : t1);
+        record.t = (t1 > t_min ? t1 : t2);
         record.p = h_ray::point_at_parameter(ray, record.t);        
         record.normal = fvec3_normalize( record.p - sphere.center );
         return true;
@@ -156,24 +180,20 @@ namespace h_camera {
 }
 
 namespace h_app{
-  FVec3 to_color(const h_ray::ray& ray, h_rayhit::hitable* world)
+  FVec3 to_color(const h_ray::ray& ray, const h_rayhit::hitable& world)
   {
     FVec3 white = {1.0f, 1.0f, 1.0f};
     FVec3 black = {0.0f, 0.0f, 0.0f};
-    
-    float min_t = 0;
-    float max_t = 10000;
+   
     h_rayhit::hit_record record;
-    if( world->hit_func(world->hitable_obj, ray, min_t, max_t, record) )
+    if( world.hit_func(world.hitable_obj, ray, 0.000001, FLT_MAX, record) )
     {
-      FVec3 normal = (record.normal + white) * 0.5f;
-      return normal;
+      h_ray::ray diffused_ray = h_ray::create_ray( record.p, fvec3_normalize(record.normal + h_random::random_in_unit_sphere()));
+      return to_color(diffused_ray, world) * 0.5f;
     }
-
+  
     float t = 0.5f * (ray.dir.y + 1.0f);
-
     FVec3 base = {0.5f, 0.7f, 1.0f};
-
     return  white*(1.0f - t) + base*t;
   }
 }
@@ -211,13 +231,14 @@ int main() {
     for(int i = 0; i < nx; i++)   {
       FVec3 color = {0,0,0};
 
+      //printf("x=%i y=%i\n", i, j);
       for(int s = 0; s < sample; ++s) {
         float u = ( float(i) + h_random::randomf() ) / float(nx);
         float v = ( float(j) + h_random::randomf() ) / float(ny);
 
         // dir's transition = from top-left to bottom-right
         h_ray::ray ray = h_camera::get_ray(camera, u, v);
-        color += h_app::to_color(ray, &world);
+        color += h_app::to_color(ray, world);
       }
       color /= float(sample);
 
