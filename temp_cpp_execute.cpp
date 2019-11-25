@@ -11,6 +11,8 @@ namespace h_random {
   {
     float v = rand();
     float m = RAND_MAX + 1;
+    
+    // return [0,1)
     return v / m;   
   }
 
@@ -66,9 +68,8 @@ namespace h_rayhit{
     FVec3 p;
     FVec3 normal;
   };
-
+  
   typedef bool test_hit_fuc(void* obj, const h_ray::ray&, float t_min, float t_max, hit_record& record);
-
   struct hitable
   {
     test_hit_fuc* hit_func;
@@ -87,7 +88,6 @@ namespace h_rayhit{
   {
     if( !world ) return false;
     const std::vector<hitable>& objs = *((std::vector<hitable>*)(world));
-    //std::vector<hitable>* objs = (std::vector<hitable>*)world;
 
     hit_record temp;
     bool hit_anything = false;
@@ -180,13 +180,18 @@ namespace h_camera {
 }
 
 namespace h_app{
+  inline FVec3 color_gamma_2(FVec3 color)
+  {
+    return {sqrt(color.x), sqrt(color.y), sqrt(color.z)};
+  }
+
   FVec3 to_color(const h_ray::ray& ray, const h_rayhit::hitable& world)
   {
     FVec3 white = {1.0f, 1.0f, 1.0f};
     FVec3 black = {0.0f, 0.0f, 0.0f};
    
     h_rayhit::hit_record record;
-    if( world.hit_func(world.hitable_obj, ray, 0.000001, FLT_MAX, record) )
+    if( world.hit_func(world.hitable_obj, ray, 0.001, FLT_MAX, record) )
     {
       h_ray::ray diffused_ray = h_ray::create_ray( record.p, fvec3_normalize(record.normal + h_random::random_in_unit_sphere()));
       return to_color(diffused_ray, world) * 0.5f;
@@ -231,17 +236,15 @@ int main() {
     for(int i = 0; i < nx; i++)   {
       FVec3 color = {0,0,0};
 
-      //printf("x=%i y=%i\n", i, j);
       for(int s = 0; s < sample; ++s) {
         float u = ( float(i) + h_random::randomf() ) / float(nx);
         float v = ( float(j) + h_random::randomf() ) / float(ny);
 
-        // dir's transition = from top-left to bottom-right
         h_ray::ray ray = h_camera::get_ray(camera, u, v);
         color += h_app::to_color(ray, world);
       }
       color /= float(sample);
-
+      color = h_app::color_gamma_2(color);
 
       int ir = int(255.99f*color.x);
       int ig = int(255.99f*color.y);
