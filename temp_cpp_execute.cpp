@@ -125,34 +125,24 @@ namespace h_rayhit{
 
     // use quadratic formula to test p = (origin + dir*t) and sphere for all t
     float discriminant = b*b - 4*a*c;
-
-      // ray and sphere 
-      // don't intersect
-      if(discriminant < 0) 
-        return false;
-      
-      // intersect
-      // sqrt_d == 0 -> only one  
-      // sqrt_d > 0
-      //      t1 | t2 | hit    
-      // min  -  |  - | false      ==> meaning t1 < t2 < min
-      // min  +  |  - | impossible ==> meaning t2 < min < t1 
-      // max  -  |  + | true       ==> meaning t1 < min < t2
-      // max  +  |  + | false      ==> meaning max < t1 < t2 
-      else 
-      {
-        float sqrt_d = sqrt(discriminant);
-        float t1 = ( - b - sqrt_d ) / (2*a);
-        float t2 = ( - b + sqrt_d ) / (2*a);
-        if( t1 > t_max || t2 < t_min )
-          return false;
-
-        record.t = (t1 > t_min ? t1 : t2);
-        record.p = h_ray::point_at_parameter(ray, record.t);        
-        record.normal = fvec3_normalize( record.p - sphere.center );
-        return true;
-      }
+    if(discriminant < 0) 
       return false;
+    
+    // intersect
+    else 
+    {
+      float sqrt_d = sqrt(discriminant);
+      float t1 = ( - b - sqrt_d ) / (2*a);
+      float t2 = ( - b + sqrt_d ) / (2*a);
+      if( t1 > t_max || t2 < t_min )
+        return false;
+
+      record.t = (t1 > t_min ? t1 : t2);
+      record.p = h_ray::point_at_parameter(ray, record.t);        
+      record.normal = fvec3_normalize( record.p - sphere.center );
+      return true;
+    }
+    return false;
   }
 }
 
@@ -290,6 +280,7 @@ void print_ppm()
 
 bool create_threads()
 {
+  // TODO(minjeong): check if that W/H is dividable without remainders.
   int numH = 2;
   int numW = (NUM_THREADS >> 1);
 
@@ -297,6 +288,7 @@ bool create_threads()
   {
     for(int j = 0; j < numW; ++j)
     {
+      // TODO(minjeong): can reduce arg to int(section number or whatever)
       thread_data* data = (thread_data*)malloc(sizeof(thread_data));
       data->x0 = (gAppData.w/numW) * j; 
       data->y0 = (gAppData.h/numH) * i;
@@ -317,6 +309,7 @@ int main() {
   gAppData.w = 1600;
   gAppData.h = 900;
   gAppData.bytesPerPixel = 3;
+
   gAppData.camera = h_camera::create_camera({0,0,0});
   
   h_shape::sphere obj1;
@@ -329,13 +322,12 @@ int main() {
   objs_in_world.push_back( h_rayhit::create_hitable(&obj1, h_rayhit::test_sphere_ray) );
   objs_in_world.push_back( h_rayhit::create_hitable(&obj2, h_rayhit::test_sphere_ray) );
 
-  // TODO(minjeong): can other threads access/refer to the alive variables(for sure) in main thread's stack using pointers passed by param? 
   gAppData.world = h_rayhit::create_hitable(&objs_in_world, h_rayhit::test_world_ray);
   gAppData.framebuffer = (unsigned char*)malloc(gAppData.w * gAppData.h * sizeof(unsigned char)* gAppData.bytesPerPixel);
 
   if(create_threads())
   { 
-    //TODO(minjeong): wait until all threads finish their work
+    fprintf(stderr, "Writing buffer using multi threads..");
     DWORD wait_result = WaitForMultipleObjects( NUM_THREADS, gAppData.thread_handles, TRUE, INFINITE);
     if(wait_result != WAIT_OBJECT_0)
     {
@@ -349,6 +341,7 @@ int main() {
   }
   else
   {
+    fprintf(stderr, "Writing buffer without multi threads..");
     write_buffer(0, 0, gAppData.w, gAppData.h);
   }
 
