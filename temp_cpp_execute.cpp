@@ -56,6 +56,17 @@ namespace h_ray{
   }
 }
 
+namespace h_util {
+
+  //real glass has reflectivity that varies with angle
+  //simple polynomial approximation by Christophe Schlick
+  float schlick(float cos, float ref_idx) {
+    float r0 = (1.0f - ref_idx) / ( 1.0f + ref_idx);
+    r0 = r0*r0;
+    return r0 + (1-r0)*pow((1-cos), 5);
+  }
+}
+
 namespace h_vector{
   FVec3 reflect(const FVec3& v, const FVec3& n)
   {
@@ -65,7 +76,7 @@ namespace h_vector{
   {
     FVec3 uv = fvec3_normalize(v);
     float dt = fvec3_dot(uv, n);
-    float discriminant = 1.0f - ni_over_nt*(1-dt*dt);
+    float discriminant = 1.0f - ni_over_nt*ni_over_nt*(1-dt*dt);
     if(pRefracted && discriminant > 0)
     {
       *pRefracted = (uv - n*dt)*ni_over_nt - n*sqrt(discriminant);
@@ -200,7 +211,7 @@ namespace h_rayhit{
         record.hit = true;
         record.t = (t1 > t_min ? t1 : t2);
         record.p = h_ray::point_at_parameter(ray, record.t);        
-        record.normal = fvec3_normalize( record.p - sphere.center );
+        record.normal = ( record.p - sphere.center ) / sphere.radius;
         return record;
       }
       return record;
@@ -236,25 +247,37 @@ namespace h_rayhit{
 
     float ni_over_nt = 0;
     FVec3 outward_normal;
+    float cos = 0;
+    
     if(fvec3_dot(ray.dir, record.normal) > 0) {
       outward_normal = record.normal*-1;
       ni_over_nt = material.refract_index;
+      cos = material.refract_index * fvec3_dot(ray.dir, record.normal) ;
     }
     else {
       outward_normal = record.normal;
-      ni_over_nt = 1/ material.refract_index;
+      ni_over_nt = 1.0f / material.refract_index;
+      cos = -fvec3_dot(ray.dir, record.normal);
     }
 
     FVec3 refracted;
-    if(h_vector::refract(ray.dir, outward_normal, ni_over_nt, &refracted)){
-      result.ray = h_ray::create_ray(record.p, refracted);
-      result.scattered = true;
-    } else
+    float reflect_prop;
+    if(h_vector::refract(ray.dir, outward_normal, ni_over_nt, &refracted))
     {
-      result.scattered = false;
-      result.ray = h_ray::create_ray(record.p, reflected);
+      reflect_prop = h_util::schlick(cos, material.refract_index);
+      result.ray = h_ray::create_ray(record.p, refracted);  
+    } 
+    else
+    {
+      reflect_prop = 1.0f;
+    }
+
+    if(h_random::randomf() < reflect_prop)
+    {
+      result.ray = h_ray::create_ray(record.p, reflected);  
     }
     
+    result.scattered = true;
     return result;
   }
 }
@@ -469,24 +492,27 @@ int main() {
 
   gAppData.camera = h_camera::create_camera({0,0,0});
   
-  h_shape::sphere sphere[4];
+  h_shape::sphere sphere[5];
   sphere[0] = h_shape::create_sphere({0,0,-1}, 0.5f);
   sphere[1] = h_shape::create_sphere({0,-100.5,-1}, 100.f);
   sphere[2] = h_shape::create_sphere({1,0,-1}, 0.5f);
   sphere[3] = h_shape::create_sphere({-1,0,-1}, 0.5f);
+  sphere[4] = h_shape::create_sphere({-1,0,-1}, -0.45f);
 
   h_material::lambertian sphere1Mat = h_material::create_lambertian({0.8f, 0.3f, 0.3f}); 
   h_material::lambertian sphere2Mat= h_material::create_lambertian({0.8f, 0.8f, 0.0f});
   h_material::metal sphere3Mat= h_material::create_metal({0.8f, 0.6f, 0.2f}, 0.0f);
-  h_material::metal sphere4Mat = h_material::create_metal({0.8f, 0.8f, 0.8f}, 0.0f);
+  h_material::dielectric sphere4Mat = h_material::create_dielectric(1.5f);
+  h_material::dielectric sphere5Mat = h_material::create_dielectric(1.5f);
     
-  h_rayhit::hitable world[4];
+  h_rayhit::hitable world[5];
   world[0] = h_rayhit::create_hitable(&sphere[0], h_rayhit::test_sphere_ray, &sphere1Mat, h_rayhit::lambertian_scatter);
   world[1] = h_rayhit::create_hitable(&sphere[1], h_rayhit::test_sphere_ray, &sphere2Mat, h_rayhit::lambertian_scatter);
   world[2] = h_rayhit::create_hitable(&sphere[2], h_rayhit::test_sphere_ray, &sphere3Mat, h_rayhit::metal_scatter);
-  world[3] = h_rayhit::create_hitable(&sphere[3], h_rayhit::test_sphere_ray, &sphere4Mat, h_rayhit::metal_scatter);
+  world[3] = h_rayhit::create_hitable(&sphere[3], h_rayhit::test_sphere_ray, &sphere4Mat, h_rayhit::dielectric_scatter);
+  world[4] = h_rayhit::create_hitable(&sphere[4], h_rayhit::test_sphere_ray, &sphere5Mat, h_rayhit::dielectric_scatter);
+  
   int size = sizeof(world)/sizeof(h_rayhit::hitable);
-
 
   gAppData.world = world;
   gAppData.size = size;
