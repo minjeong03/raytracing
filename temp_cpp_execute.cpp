@@ -56,66 +56,128 @@ namespace h_ray{
   }
 }
 
+namespace h_vector{
+  FVec3 reflect(const FVec3& v, const FVec3& n)
+  {
+    return v - n * 2 * fvec3_dot(v, n);
+  }
+  bool refract(const FVec3& v, const FVec3& n, float ni_over_nt, FVec3* pRefracted)
+  {
+    FVec3 uv = fvec3_normalize(v);
+    float dt = fvec3_dot(uv, n);
+    float discriminant = 1.0f - ni_over_nt*(1-dt*dt);
+    if(pRefracted && discriminant > 0)
+    {
+      *pRefracted = (uv - n*dt)*ni_over_nt - n*sqrt(discriminant);
+      return true;
+    }
+    return false;
+  }
+}
+
+
 namespace h_shape{
   struct sphere
   {
     FVec3 center;
     float radius;
   };
+
+  sphere create_sphere(FVec3 center, float radius)
+  {
+    sphere sphere;
+    sphere.center = center;
+    sphere.radius = radius;
+    return sphere;
+  }
+}
+
+namespace h_material{
+  struct lambertian
+  {
+    FVec3 albedo;
+  };
+
+  lambertian create_lambertian(FVec3 albedo)
+  {
+    lambertian a;
+    a.albedo = albedo;
+    return a;
+  }
+  
+  struct metal
+  {
+    FVec3 albedo;
+    float fuzz;
+  };
+  
+  metal create_metal(FVec3 albedo, float fuzz)
+  {
+    metal a;
+    a.albedo = albedo;
+    a.fuzz = fuzz;
+    return a;
+  }
+  
+  struct dielectric
+  {
+    float refract_index;
+  };
+
+  dielectric create_dielectric(float ref_ind)
+  {
+    dielectric a;
+    a.refract_index = ref_ind;
+    return a;
+  }
 }
 
 namespace h_rayhit{
+  
+  
   struct hit_record
   {
     float t;
     FVec3 p;
     FVec3 normal;
-  };
-  
-  typedef bool test_hit_fuc(void* obj, const h_ray::ray&, float t_min, float t_max, hit_record& record);
-  struct hitable
-  {
-    test_hit_fuc* hit_func;
-    void* hitable_obj;
+    bool hit;
   };
 
-  hitable create_hitable(void* hitable_object, test_hit_fuc* hit_test_function)
+    struct scatter_result
+  {
+    h_ray::ray ray;
+    FVec3 attenuation;
+    bool scattered;
+  };
+
+  typedef hit_record test_hit_fuc(void* obj, const h_ray::ray&, float t_min, float t_max);
+  typedef scatter_result scatter_func(void* material, const h_ray::ray& ray, const hit_record& record);
+
+  struct hitable
+  {
+    void* shape;
+    test_hit_fuc* hit_func;
+
+    void* material;
+    scatter_func* scatter_func;
+  };
+
+  hitable create_hitable(void* shape, test_hit_fuc* hit_test_function, void* material, scatter_func* scatter_func)
   {
     hitable obj;
-    obj.hitable_obj = hitable_object;
+    obj.shape = shape;
+    obj.material = material;
     obj.hit_func = hit_test_function;
+    obj.scatter_func = scatter_func;
     return obj;
   }
 
-  bool test_world_ray(/*std::vector<hitable>*/void* world, const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
+  hit_record test_sphere_ray(/*sphere**/void* obj, 
+  const h_ray::ray& ray, float t_min, float t_max)
   {
-    if( !world ) return false;
-    const std::vector<hitable>& objs = *((std::vector<hitable>*)(world));
-
-    hit_record temp;
-    bool hit_anything = false;
-    double closest_t = t_max;
-
-    for( const hitable& h : objs )
-    {
-      if(h.hit_func(h.hitable_obj, ray, t_min, t_max, temp))
-      {
-        hit_anything = true;
-        if(closest_t > temp.t)
-        {
-          closest_t = temp.t;
-          record = temp;
-          record.t = closest_t;
-        }
-      }
-    }
-    return hit_anything;
-  }
-
-  bool test_sphere_ray(/*sphere**/void* obj, 
-  const h_ray::ray& ray, float t_min, float t_max, hit_record& record)
-  {
-    if( !obj ) return false;
+    hit_record record;
+    record.hit = false;
+    if( !obj ) return record;
     const h_shape::sphere& sphere = *(h_shape::sphere*)(obj);
 
     FVec3 oc = ray.origin - sphere.center;
@@ -123,26 +185,77 @@ namespace h_rayhit{
     float b = 2 * fvec3_dot(ray.dir, oc);
     float c = fvec3_dot(oc, oc) - sphere.radius*sphere.radius;
 
-    // use quadratic formula to test p = (origin + dir*t) and sphere for all t
     float discriminant = b*b - 4*a*c;
-    if(discriminant < 0) 
-      return false;
-    
-    // intersect
-    else 
-    {
-      float sqrt_d = sqrt(discriminant);
-      float t1 = ( - b - sqrt_d ) / (2*a);
-      float t2 = ( - b + sqrt_d ) / (2*a);
-      if( t1 > t_max || t2 < t_min )
-        return false;
 
-      record.t = (t1 > t_min ? t1 : t2);
-      record.p = h_ray::point_at_parameter(ray, record.t);        
-      record.normal = fvec3_normalize( record.p - sphere.center );
-      return true;
+      if(discriminant < 0) 
+        return record;
+      else 
+      {
+        float sqrt_d = sqrt(discriminant);
+        float t1 = ( - b - sqrt_d ) / (2*a);
+        float t2 = ( - b + sqrt_d ) / (2*a);
+        if( t1 > t_max || t2 < t_min )
+          return record;
+
+        record.hit = true;
+        record.t = (t1 > t_min ? t1 : t2);
+        record.p = h_ray::point_at_parameter(ray, record.t);        
+        record.normal = fvec3_normalize( record.p - sphere.center );
+        return record;
+      }
+      return record;
+  }
+
+  
+  scatter_result lambertian_scatter(void* mat, const h_ray::ray& ray, const hit_record& record)
+  {
+    scatter_result result;
+    const h_material::lambertian& material = *((h_material::lambertian*)mat);
+    result.ray = h_ray::create_ray( record.p, fvec3_normalize(record.normal + h_random::random_in_unit_sphere()));
+    result.attenuation = material.albedo;
+    result.scattered = true;
+    return result;
+  }
+  scatter_result metal_scatter(void* mat, const h_ray::ray& ray, const hit_record& record)
+  {
+    scatter_result result;
+    const h_material::metal& material = *((h_material::metal*)mat);
+    float fuzz = (material.fuzz > 1.0f ? 1.0f: material.fuzz );
+    FVec3 reflected = h_vector::reflect(fvec3_normalize(ray.dir), record.normal);
+    result.ray = h_ray::create_ray( record.p, reflected + h_random::random_in_unit_sphere()* material.fuzz);
+    result.attenuation = material.albedo;
+    result.scattered = (fvec3_dot(result.ray.dir, record.normal) > 0);
+    return result;
+  }
+  scatter_result dielectric_scatter(void* mat, const h_ray::ray& ray, const hit_record& record)
+  {
+    scatter_result result;
+    const h_material::dielectric& material = *((h_material::dielectric*)mat);
+    FVec3 reflected = h_vector::reflect(ray.dir, record.normal);
+    result.attenuation = {1.0f, 1.0f, 1.0f};
+
+    float ni_over_nt = 0;
+    FVec3 outward_normal;
+    if(fvec3_dot(ray.dir, record.normal) > 0) {
+      outward_normal = record.normal*-1;
+      ni_over_nt = material.refract_index;
     }
-    return false;
+    else {
+      outward_normal = record.normal;
+      ni_over_nt = 1/ material.refract_index;
+    }
+
+    FVec3 refracted;
+    if(h_vector::refract(ray.dir, outward_normal, ni_over_nt, &refracted)){
+      result.ray = h_ray::create_ray(record.p, refracted);
+      result.scattered = true;
+    } else
+    {
+      result.scattered = false;
+      result.ray = h_ray::create_ray(record.p, reflected);
+    }
+    
+    return result;
   }
 }
 
@@ -172,23 +285,64 @@ namespace h_camera {
   }
 }
 
-
 namespace h_app{
+  struct hit_result
+  {
+    h_rayhit::hit_record record;
+    void* material;
+    h_rayhit::scatter_func* scatter_func;
+  };
+
+  hit_result test_world_ray(h_rayhit::hitable hitable_array[], int size, 
+                      const h_ray::ray& ray, float t_min, float t_max)
+  {
+    hit_result result;
+    result.record.hit = false;
+    if( !hitable_array ) return result;
+
+    h_rayhit::hit_record temp;
+    double closest_t = t_max;
+
+    for(int i = 0; i < size; ++i)
+    {
+      const h_rayhit::hitable& h = hitable_array[i];
+      temp = h.hit_func(h.shape, ray, t_min, t_max); 
+      if(temp.hit)
+      {
+        if(closest_t > temp.t)
+        {
+          closest_t = temp.t;
+          result.record = temp;
+          result.material = h.material;
+          result.scatter_func = h.scatter_func;
+        }
+      }
+    }
+    return result;
+  }
+
   inline FVec3 color_gamma_2(FVec3 color)
   {
     return {sqrt(color.x), sqrt(color.y), sqrt(color.z)};
   }
 
-  FVec3 to_color(const h_ray::ray& ray, const h_rayhit::hitable& world)
+  FVec3 to_color(const h_ray::ray& ray, h_rayhit::hitable world[], int size, int depth)
   {
     FVec3 white = {1.0f, 1.0f, 1.0f};
     FVec3 black = {0.0f, 0.0f, 0.0f};
    
-    h_rayhit::hit_record record;
-    if( world.hit_func(world.hitable_obj, ray, 0.001, FLT_MAX, record) )
+    h_app::hit_result result = test_world_ray(world, size, ray, 0.001, FLT_MAX);
+    if( result.record.hit )
     {
-      h_ray::ray diffused_ray = h_ray::create_ray( record.p, fvec3_normalize(record.normal + h_random::random_in_unit_sphere()));
-      return to_color(diffused_ray, world) * 0.5f;
+      h_rayhit::scatter_result scattered = result.scatter_func(result.material, ray, result.record);
+      if(depth < 50 && scattered.scattered)
+      {
+        return to_color(scattered.ray, world, size, depth+1) * scattered.attenuation;
+      }
+      else
+      {
+        return black;
+      }
     }
   
     float t = 0.5f * (ray.dir.y + 1.0f);
@@ -199,7 +353,8 @@ namespace h_app{
   struct app_data
   {
     h_camera::camera camera;
-    h_rayhit::hitable world;
+    h_rayhit::hitable* world;
+    int size;
     int w;
     int h;
     int bytesPerPixel;
@@ -221,7 +376,6 @@ struct thread_data
 void write_buffer(int x0, int y0, int x1, int y1)
 {
   const int sample = 100;  
-  
   unsigned char* fb = gAppData.framebuffer;
   for (int j = y0; j < y1; j++) {
     for(int i = x0; i < x1; i++)   {
@@ -232,7 +386,7 @@ void write_buffer(int x0, int y0, int x1, int y1)
         float v = ( float(j) + h_random::randomf() ) / float(gAppData.h);
         
         h_ray::ray ray = h_camera::get_ray(gAppData.camera, u, v);
-        color += h_app::to_color(ray, gAppData.world);
+        color += h_app::to_color(ray, gAppData.world, gAppData.size, 0);
       }
 
       int index = (j * gAppData.w * gAppData.bytesPerPixel) + (i * gAppData.bytesPerPixel);
@@ -261,6 +415,7 @@ unsigned thread_main(void* args)
 // +x-right
 // +y-up
 // +z-out of screen
+
 
 void print_ppm()
 {
@@ -304,26 +459,37 @@ bool create_threads()
   return true;
 }
 
+
 int main() {
   srand(time(NULL));
 
-  gAppData.w = 1600;
-  gAppData.h = 900;
+  gAppData.w = 800;
+  gAppData.h = 400;
   gAppData.bytesPerPixel = 3;
 
   gAppData.camera = h_camera::create_camera({0,0,0});
   
-  h_shape::sphere obj1;
-  obj1.center = {0,0,-1};
-  obj1.radius = 0.5f;
-  h_shape::sphere obj2;
-  obj2.center = {0, -100.5, -1};
-  obj2.radius = 100;
-  std::vector<h_rayhit::hitable> objs_in_world;
-  objs_in_world.push_back( h_rayhit::create_hitable(&obj1, h_rayhit::test_sphere_ray) );
-  objs_in_world.push_back( h_rayhit::create_hitable(&obj2, h_rayhit::test_sphere_ray) );
+  h_shape::sphere sphere[4];
+  sphere[0] = h_shape::create_sphere({0,0,-1}, 0.5f);
+  sphere[1] = h_shape::create_sphere({0,-100.5,-1}, 100.f);
+  sphere[2] = h_shape::create_sphere({1,0,-1}, 0.5f);
+  sphere[3] = h_shape::create_sphere({-1,0,-1}, 0.5f);
 
-  gAppData.world = h_rayhit::create_hitable(&objs_in_world, h_rayhit::test_world_ray);
+  h_material::lambertian sphere1Mat = h_material::create_lambertian({0.8f, 0.3f, 0.3f}); 
+  h_material::lambertian sphere2Mat= h_material::create_lambertian({0.8f, 0.8f, 0.0f});
+  h_material::metal sphere3Mat= h_material::create_metal({0.8f, 0.6f, 0.2f}, 0.0f);
+  h_material::metal sphere4Mat = h_material::create_metal({0.8f, 0.8f, 0.8f}, 0.0f);
+    
+  h_rayhit::hitable world[4];
+  world[0] = h_rayhit::create_hitable(&sphere[0], h_rayhit::test_sphere_ray, &sphere1Mat, h_rayhit::lambertian_scatter);
+  world[1] = h_rayhit::create_hitable(&sphere[1], h_rayhit::test_sphere_ray, &sphere2Mat, h_rayhit::lambertian_scatter);
+  world[2] = h_rayhit::create_hitable(&sphere[2], h_rayhit::test_sphere_ray, &sphere3Mat, h_rayhit::metal_scatter);
+  world[3] = h_rayhit::create_hitable(&sphere[3], h_rayhit::test_sphere_ray, &sphere4Mat, h_rayhit::metal_scatter);
+  int size = sizeof(world)/sizeof(h_rayhit::hitable);
+
+
+  gAppData.world = world;
+  gAppData.size = size;
   gAppData.framebuffer = (unsigned char*)malloc(gAppData.w * gAppData.h * sizeof(unsigned char)* gAppData.bytesPerPixel);
 
   if(create_threads())
