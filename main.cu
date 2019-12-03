@@ -8,6 +8,8 @@
 #include <process.h>
 #include <windows.h>
 
+#define FUNC_PREFIX __device__
+
 #define checkCudaError(val) check_cuda( (val), #val, __FILE__, __LINE__)
 void check_cuda(cudaError_t result, 
 char const *const func, const char* const file, int const line)
@@ -392,30 +394,27 @@ namespace h_app{
     h_camera::camera camera;
     h_rayhit::hitable* world;
     int size;
-    int w;
-    int h;
-    unsigned char* framebuffer;
   };
 }
 
 
-void write_buffer(int x0, int y0, int x1, int y1, unsigned char* fb, 
+void write_buffer(int w, int h, unsigned char* fb, 
 const h_app::app_data& gAppData)
 {
   const int sample = 100;  
-  for (int j = y0; j < y1; j++) {
-    for(int i = x0; i < x1; i++)   {
+  for (int j = 0; j < h; j++) {
+    for(int i = 0; i < w; i++)   {
       FVec3 color = {0,0,0}; 
 
       for(int s = 0; s < sample; ++s) {
-        float u = ( float(i) + h_random::randomf() ) / float(gAppData.w);
-        float v = ( float(j) + h_random::randomf() ) / float(gAppData.h);
+        float u = ( float(i) + h_random::randomf() ) / w;
+        float v = ( float(j) + h_random::randomf() ) / h;
         
         h_ray::ray ray = h_camera::get_ray(gAppData.camera, u, v);
         color += h_app::to_color(ray, gAppData.world, gAppData.size, 0);
       }
 
-      int index = (j * gAppData.w * 3) + (i * 3);
+      int index = (j * w * 3) + (i * 3);
 
       color /= float(sample);
       color = h_util::color_gamma_2(color);
@@ -424,6 +423,42 @@ const h_app::app_data& gAppData)
       fb[index + 2] = unsigned char(255.99f*color.z);
     }
   }
+}
+
+__global__ 
+void render(unsigned char* fb, int max_x, int max_y)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
+    
+    if( i >= max_x || j >= max_y )
+        return;
+
+    FVec3 color;
+    
+    myInt mint;
+    mint.x = 1;
+    void* mem = malloc_in_gpu(mint);
+    
+    int samples = 100;
+    int index = (j * max_x * 3) + (i * 3);
+    float u = float(i) / max_x;
+    float v = float(j) / max_y;
+    
+    color.x = u;
+    color.y = v;
+    color.z = 0.2f;
+    
+    for(int s = 0; s < samples; ++s)
+    {
+        color.x += 1.0f /(samples+1);
+        color.y += 1.0f /(samples+1);
+    }
+    
+        
+    fb[index + 0] = unsigned char(255.99f*color.x);
+    fb[index + 1] = unsigned char(255.99f*color.y);
+    fb[index + 2] = unsigned char(255.99f*color.z);
 }
 
 // right handed coordinate
@@ -446,15 +481,11 @@ void print_ppm(int w, int h, unsigned char* fb)
   }
 }
 
-
 int main() {
   srand(time(NULL));
   
   h_app::app_data gAppData;
-  
-  gAppData.w = 800;
-  gAppData.h = 400;
-
+ 
   gAppData.camera = h_camera::create_camera({0,0,0});
   
   h_shape::sphere sphere[5];
@@ -477,15 +508,29 @@ int main() {
   world[3] = h_rayhit::create_hitable(&sphere[3], h_rayhit::test_sphere_ray, &sphere4Mat, h_rayhit::dielectric_scatter);
   world[4] = h_rayhit::create_hitable(&sphere[4], h_rayhit::test_sphere_ray, &sphere5Mat, h_rayhit::dielectric_scatter);
   
-  int size = sizeof(world)/sizeof(h_rayhit::hitable);
-
   gAppData.world = world;
-  gAppData.size = size;
-  gAppData.framebuffer = (unsigned char*)malloc(gAppData.w * gAppData.h * sizeof(unsigned char)* 3);
+  gAppData.size = sizeof(world)/sizeof(h_rayhit::hitable);
 
-  write_buffer(0, 0, gAppData.w, gAppData.h, gAppData.framebuffer, gAppData);
-  print_ppm(gAppData.w, gAppData.h, gAppData.framebuffer);
+  int nx = 40;
+  int ny = 40;
   
-  free(gAppData.framebuffer);
+  int num_pixels = nx * ny;
+  size_t fb_size = 3 * num_pixels * sizeof(unsigned char);
+  unsigned char* fb;
+  checkCudaError(cudaMallocManaged((void**)&fb, fb_size));
+
+  int thread_x = 8;
+  int thread_y = 8;
+
+  dim3 blocks(nx/thread_x +1, ny/thread_y +1);
+  dim3 threads(thread_x, thread_y);
+  render<<<blocks, threads>>>(fb, nx, ny);
+  checkCudaError(cudaGetLastError());
+  checkCudaError(cudaDeviceSynchronize());
+  
+  print_ppm(nx, ny, fb);
+  
+  cudaFree(fb);
+  
   return 0;  
 }
