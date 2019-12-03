@@ -39,13 +39,6 @@ namespace h_shape{
 }
 
 namespace h_intersect{
-  struct ray_intersect_result
-  {
-    float t;
-    bool hit;
-    bool inside;
-  };
-
   __device__ bool intersect_ray_sphere(const h_ray::ray& ray, const h_shape::sphere& sphere)
   {
     FVec3 oc = ray.origin - sphere.center;
@@ -65,12 +58,12 @@ namespace h_app{
     FVec3 unit_dir = fvec3_normalize(ray.dir);
     float t = 0.5f * (unit_dir.y + 1.0f); // map y [-1, 1] to [0, 1]
     
-    // h_shape::sphere sphere;
-    // sphere.center = {0,0,-1};
-    // sphere.radius = 0.5f;
+    h_shape::sphere sphere;
+    sphere.center = {0,0,-1};
+    sphere.radius = 0.5f;
     
-    // if(h_intersect::intersect_ray_sphere(ray, sphere))
-      // return {1,0,0};
+    if(h_intersect::intersect_ray_sphere(ray, sphere))
+        return {1,0,0};
             
     FVec3 white = {1.0f, 1.0f, 1.0f};
     FVec3 base = {0.5f, 0.7f, 1.0f};
@@ -129,7 +122,6 @@ void print_ppm(unsigned char* fb, int w, int h)
 // +y-up
 // +z-out of screen
 int main(int argc, char **argv) {
-
     int nx = 1920;
     int ny = 1080;
     if( argc > 1 && argc <= 3)
@@ -144,9 +136,12 @@ int main(int argc, char **argv) {
     size_t fb_size = 3 * num_pixels * sizeof(unsigned char); 
     checkCudaError( cudaMallocManaged(&fb, fb_size) );
 
-    FVec3 lower_left_corner = {-2, -1, -1};
-    FVec3 horizontal = {4, 0, 0};
-    FVec3 vertical = {0, 2, 0};
+    float aspect_ratio = float(nx)/ ny;
+    float h = 2;
+    float w = aspect_ratio * h; 
+    FVec3 lower_left_corner = {-w/2.f, -h/2.f, -1};
+    FVec3 horizontal = {w, 0, 0};
+    FVec3 vertical = {0, h, 0};
     FVec3 camera_pos = {0,0,0};
 
     int thread_x = 8;
