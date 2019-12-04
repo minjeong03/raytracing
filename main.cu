@@ -3,10 +3,10 @@
 #include "himath.h"
 #include <curand_kernel.h>
 
-#define DEVICE_FUNC __device__
 
 #define checkCudaError(val) check_cuda( (val), #val, __FILE__, __LINE__)
-void check_cuda(cudaError_t result, char const *const func, const char* file, int const line)
+void check_cuda(cudaError_t result, 
+char const *const func, const char* file, int const line)
 {
     if( result != cudaSuccess ) {
         fprintf(stderr, "CUDA error = '%i' %s at %s : %i '%s'\n", unsigned(result),
@@ -25,7 +25,7 @@ namespace h_ray{
     FVec3 dir;
   };
   
-  DEVICE_FUNC ray create_ray(FVec3 origin, FVec3 dir)
+  __device__ ray create_ray(FVec3 origin, FVec3 dir)
   {
       ray r;
       r.origin = origin;
@@ -33,7 +33,7 @@ namespace h_ray{
       return r;
   }
 
-  DEVICE_FUNC FVec3 point_at_parameter(const ray& ray, float t)
+  __device__ FVec3 point_at_parameter(const ray& ray, float t)
   {
     return ray.origin + ray.dir*t;
   }
@@ -55,7 +55,7 @@ namespace h_hit{
       FVec3 n;
   };
   
-  DEVICE_FUNC bool 
+  __device__ bool 
   hit_sphere(const h_ray::ray& ray, const h_shape::sphere& sphere, 
   float t_min, float t_max, hit_record& record)
   {
@@ -81,7 +81,7 @@ namespace h_hit{
     return true;
   }
   
-  DEVICE_FUNC bool
+  __device__ bool
   hit_world(const h_ray::ray& ray, h_shape::sphere* world, int obj_size,
   float t_min, float t_max, hit_record& record) 
   {
@@ -104,23 +104,48 @@ namespace h_hit{
   }
 }
 
-
-DEVICE_FUNC 
-FVec3 to_color(const h_ray::ray& ray, h_shape::sphere* world, int obj_size)
+__device__ FVec3 random_in_unit_sphere(curandState* local_rand_state)
 {
-    FVec3 white = {1.0f, 1.0f, 1.0f};
+    FVec3 rand = {0,0,0};
+    do
+    {        
+        rand.x = 1.f - curand_uniform(local_rand_state);
+        rand.y = 1.f - curand_uniform(local_rand_state);
+        rand.z = 1.f - curand_uniform(local_rand_state);   
+    }while(fvec3_dot(rand, rand) >= 1);
+    
+    return rand;
+}
+
+
+__device__ 
+FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
+                 int max_depth, curandState* local_rand_state)
+{
+    FVec3 white = {1.0f, 1.0f, 1.0f};              
+    FVec3 ambient = {0.5f, 0.7f, 1.0f};
 
     h_hit::hit_record record;
-    if(h_hit::hit_world(ray, world, obj_size, 0.000001f, 100000.f, record)) {
+    h_ray::ray ray = init_ray;
+    
+    float coef_attenuation = 0.5f;
+    float attenuation = 1.f;
+    
+    for(int depth = 0; depth < max_depth; ++depth)
+    {
+        if( !h_hit::hit_world(ray, world, obj_size, 0.000001f, 100000.f, record) ) 
+            break;
         
-        return (record.n + white) * 0.5f;
+        FVec3 diffused = random_in_unit_sphere(local_rand_state);
+        ray = h_ray::create_ray(record.p, record.n + diffused);
+    
+        attenuation *= coef_attenuation;
     }
-
+    
     float t = 0.5f * (ray.dir.y + 1.0f);
-      
-    FVec3 base = {0.5f, 0.7f, 1.0f};
-
-    return  white*(1.0f - t) + base*t;
+    FVec3 color = white*(1.0f - t) + ambient*t;
+    
+    return color * attenuation;
 }
 
 
@@ -165,7 +190,7 @@ void rand_init(curandState* rand_state, int max_x, int max_y)
 __global__
 void render(unsigned char* fb, int max_x, int max_y, int ns,
 FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin,
-h_shape::sphere** world, int* size,
+h_shape::sphere** world, int* size, int max_depth,
 curandState* rand_state)
 {
     float i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -175,7 +200,7 @@ curandState* rand_state)
         return;
     
     int index = (j * max_x) + i;
-    curandState local_rand_state = rand_state[index];
+    curandState* local_rand_state = rand_state+index;
     
     FVec3 color = {0,0,0};
     float max_xf = max_x;
@@ -183,13 +208,13 @@ curandState* rand_state)
     
     for(int s = 0; s < ns; ++s)
     {
-        float u = ( i + 1.f - curand_uniform(&local_rand_state) ) / max_xf;
-        float v = ( j + 1.f - curand_uniform(&local_rand_state) ) / max_yf;
+        float u = ( i + 1.f - curand_uniform(local_rand_state) ) / max_xf;
+        float v = ( j + 1.f - curand_uniform(local_rand_state) ) / max_yf;
 
-        h_ray::ray ray = 
-        h_ray::create_ray(origin, lower_left_corner + horizontal * u + vertical * v);
+        h_ray::ray ray = h_ray::create_ray(
+            origin, lower_left_corner + horizontal * u + vertical * v);
         
-        color += to_color(ray, *world, *size);
+        color += to_color(ray, *world, *size, max_depth, local_rand_state);
     }
     color /= float(ns);
     
@@ -276,9 +301,10 @@ int main(int argc, char **argv) {
     checkCudaError( cudaDeviceSynchronize() );
     
     // Render objs in the framebuffer
+    int max_depth = 25;
     render<<<blocks, threads>>>( fb, nx, ny, ns,
                                  lower_left_corner, horizontal, vertical, camera_pos, 
-                                 dev_world, dev_num_obj,
+                                 dev_world, dev_num_obj, max_depth,
                                  dev_rand_state);
     checkCudaError( cudaGetLastError() );
     checkCudaError( cudaDeviceSynchronize() );
