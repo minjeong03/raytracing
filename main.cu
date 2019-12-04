@@ -2,7 +2,7 @@
 #define HIMATH_IMPL
 #include "himath.h"
 
-#define FUNC_PREFIX __device__
+#define DEVICE_FUNC __device__
 
 #define checkCudaError(val) check_cuda( (val), #val, __FILE__, __LINE__)
 void check_cuda(cudaError_t result, char const *const func, const char* file, int const line)
@@ -23,10 +23,9 @@ namespace h_ray{
     FVec3 dir;
   };
 
-  __device__ FVec3 point_at_parameter(float t, const ray& ray)
+  DEVICE_FUNC FVec3 point_at_parameter(const ray& ray, float t)
   {
-    FVec3 p = ray.origin + ray.dir*t;
-    return p;
+    return ray.origin + ray.dir*t;
   }
 }
 
@@ -38,8 +37,16 @@ namespace h_shape{
   };
 }
 
-namespace h_intersect{
-  __device__ bool intersect_ray_sphere(const h_ray::ray& ray, const h_shape::sphere& sphere)
+namespace h_hit{
+  struct hit_record
+  {
+      float t;
+      FVec3 p;
+      FVec3 n;
+  };
+  DEVICE_FUNC bool 
+  hit_sphere(const h_ray::ray& ray, const h_shape::sphere& sphere, 
+  float t_min, float t_max, hit_record& record)
   {
     FVec3 oc = ray.origin - sphere.center;
     float a = fvec3_dot(ray.dir, ray.dir);
@@ -48,24 +55,36 @@ namespace h_intersect{
 
     // use quadratic formula to test p = (origin + dir*t) and sphere for all t
     float discriminant = b*b - 4*a*c;
-    return (discriminant > 0);
+    if(discriminant < 0)
+        return false;
+    
+    float sqrt_d = sqrtf(discriminant);
+    float t1 = (-b-sqrt_d) / 2*a;
+    float t2 = (-b+sqrt_d) / 2*a;
+    if(t1 > t_max || t2 < t_min)
+        return false;
+    
+    record.t = (t1 > t_min? t1:t2);
+    record.p = h_ray::point_at_parameter(ray, record.t);
+    record.n = (record.p - sphere.center) / sphere.radius;
+    return true;
   }
 }
 
 namespace h_app{
-  __device__ FVec3 to_color(const h_ray::ray& ray)
+  DEVICE_FUNC FVec3 to_color(const h_ray::ray& ray, h_shape::sphere* world, int obj_size)
   {
-    FVec3 unit_dir = fvec3_normalize(ray.dir);
-    float t = 0.5f * (unit_dir.y + 1.0f); // map y [-1, 1] to [0, 1]
-    
-    h_shape::sphere sphere;
-    sphere.center = {0,0,-1};
-    sphere.radius = 0.5f;
-    
-    if(h_intersect::intersect_ray_sphere(ray, sphere))
-        return {1,0,0};
-            
     FVec3 white = {1.0f, 1.0f, 1.0f};
+   
+    h_hit::hit_record record;
+    if(h_hit::hit_sphere(ray, world[0], 0.000001f, 100000.f, record)) {
+        
+        return (record.n + white) * 0.5f;
+    }
+    
+    FVec3 unit_dir = fvec3_normalize(ray.dir);
+    float t = 0.5f * (unit_dir.y + 1.0f);
+      
     FVec3 base = {0.5f, 0.7f, 1.0f};
 
     return  white*(1.0f - t) + base*t;
@@ -73,8 +92,32 @@ namespace h_app{
 }
 
 __global__
+void create_world(h_shape::sphere** world, int* obj_size)
+{
+    if(threadIdx.x == 0 && blockIdx.x == 0) {
+        *obj_size = 1;
+        *world = (h_shape::sphere*)malloc(sizeof(h_shape::sphere) * (*obj_size));
+        
+        h_shape::sphere* s = *world;
+        s[0].center = {0, 0, -1};
+        s[0].radius = 0.5f;
+        //s[1].center = {0, -100.5f, -1};
+        //s[1].radius = 100.f;
+    }
+}
+
+__global__
+void free_world(h_shape::sphere** world)
+{
+    if(threadIdx.x == 0 && blockIdx.x == 0) {
+        free(*world);
+    }
+}
+
+__global__
 void render(unsigned char* fb, int max_x, int max_y,
-FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin)
+FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin,
+h_shape::sphere** world, int* size)
 {
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     int j = threadIdx.y + blockIdx.y * blockDim.y;
@@ -86,19 +129,12 @@ FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin)
     float u = float(i) / max_x;
     float v = float(j) / max_y;
     
-    // dir's transition = from top-left to bottom-right
     h_ray::ray ray;
     ray.origin = origin;
-    ray.dir = lower_left_corner + horizontal * u + vertical * v;
-    FVec3 color = h_app::to_color(ray);
+    ray.dir = fvec3_normalize(lower_left_corner + horizontal * u + vertical * v);
     
-    // int samples = 100;
-    // for(int s = 0; s < samples; ++s)
-    // {
-        // color.x += 1.0f / (samples+1);
-        // color.y += 1.0f / (samples+1);
-    // }
-    // color.z = 0.2f;
+    FVec3 color = h_app::to_color(ray, *world, *size);
+    
     
     fb[index+0] = unsigned char(255.99f * color.x);
     fb[index+1] = unsigned char(255.99f * color.y);
@@ -124,18 +160,26 @@ void print_ppm(unsigned char* fb, int w, int h)
 int main(int argc, char **argv) {
     int nx = 1920;
     int ny = 1080;
-    if( argc > 1 && argc <= 3)
+    if( argc == 3)
     {
         nx = atoi(argv[1]);
         ny = atoi(argv[2]);
     }
 
     int num_pixels = nx * ny;
-
     unsigned char* fb;
     size_t fb_size = 3 * num_pixels * sizeof(unsigned char); 
     checkCudaError( cudaMallocManaged(&fb, fb_size) );
-
+    
+    h_shape::sphere** dev_world;
+    int* dev_num_obj;
+    checkCudaError( cudaMalloc(&dev_world, sizeof(h_shape::sphere**)) );
+    checkCudaError( cudaMalloc(&dev_num_obj, sizeof(int)) );
+  
+    create_world<<<1,1>>>(dev_world, dev_num_obj);
+    checkCudaError( cudaGetLastError() );
+    checkCudaError( cudaDeviceSynchronize() );
+    
     float aspect_ratio = float(nx)/ ny;
     float h = 2;
     float w = aspect_ratio * h; 
@@ -151,13 +195,21 @@ int main(int argc, char **argv) {
     dim3 blocks(block_x, block_y);
     dim3 threads(thread_x, thread_y);
     render<<<blocks, threads>>>( fb, nx, ny, 
-    lower_left_corner, horizontal, vertical, camera_pos);
-
+                                 lower_left_corner, horizontal, vertical, camera_pos, 
+                                 dev_world, dev_num_obj);
     checkCudaError( cudaGetLastError() );
     checkCudaError( cudaDeviceSynchronize() );
+  
+    free_world<<<1,1>>>(dev_world);
+    checkCudaError( cudaGetLastError() );
+    checkCudaError( cudaDeviceSynchronize() );
+      
+    checkCudaError( cudaFree(dev_world) );
+    checkCudaError( cudaFree(dev_num_obj) );
+    
+    
     print_ppm(fb, nx, ny);
-
     cudaFree(fb);
 
-  return 0;  
+    return 0;  
 }
