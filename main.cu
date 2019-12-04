@@ -133,6 +133,8 @@ FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
     
     for(int depth = 0; depth < max_depth; ++depth)
     {
+        // t_min = 0.0000001 --> artifact 
+        // t_min = 0.001
         if( !h_hit::hit_world(ray, world, obj_size, 0.001f, 100000.f, record) ) 
         {            
             float t = 0.5f * (ray.dir.y + 1.0f);
