@@ -69,6 +69,28 @@ namespace h_hit{
     record.n = (record.p - sphere.center) / sphere.radius;
     return true;
   }
+  
+  DEVICE_FUNC bool
+  hit_world(const h_ray::ray& ray, h_shape::sphere* world, int obj_size,
+  float t_min, float t_max, hit_record& record) 
+  {
+    bool hit = false;
+    float closest_t = t_max;
+    hit_record temp;
+    for(int i = 0; i < obj_size; ++i)
+    {
+        if(hit_sphere(ray, world[i], t_min, t_max, temp))
+        {
+            hit = true;
+            if(temp.t < closest_t)
+            {
+                record = temp;
+                closest_t = record.t;
+            }
+        }
+    }
+    return hit;
+  }
 }
 
 namespace h_app{
@@ -77,7 +99,7 @@ namespace h_app{
     FVec3 white = {1.0f, 1.0f, 1.0f};
    
     h_hit::hit_record record;
-    if(h_hit::hit_sphere(ray, world[0], 0.000001f, 100000.f, record)) {
+    if(h_hit::hit_world(ray, world, obj_size, 0.000001f, 100000.f, record)) {
         
         return (record.n + white) * 0.5f;
     }
@@ -95,14 +117,14 @@ __global__
 void create_world(h_shape::sphere** world, int* obj_size)
 {
     if(threadIdx.x == 0 && blockIdx.x == 0) {
-        *obj_size = 1;
+        *obj_size = 2;
         *world = (h_shape::sphere*)malloc(sizeof(h_shape::sphere) * (*obj_size));
         
         h_shape::sphere* s = *world;
         s[0].center = {0, 0, -1};
         s[0].radius = 0.5f;
-        //s[1].center = {0, -100.5f, -1};
-        //s[1].radius = 100.f;
+        s[1].center = {0, -100.5f, -1};
+        s[1].radius = 100.f;
     }
 }
 
