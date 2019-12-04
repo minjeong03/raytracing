@@ -109,9 +109,9 @@ __device__ FVec3 random_in_unit_sphere(curandState* local_rand_state)
     FVec3 rand = {0,0,0};
     do
     {        
-        rand.x = 1.f - curand_uniform(local_rand_state);
-        rand.y = 1.f - curand_uniform(local_rand_state);
-        rand.z = 1.f - curand_uniform(local_rand_state);   
+        rand.x = 2.f * curand_uniform(local_rand_state) - 1.f;
+        rand.y = 2.f * curand_uniform(local_rand_state) - 1.f;
+        rand.z = 2.f * curand_uniform(local_rand_state) - 1.f;   
     }while(fvec3_dot(rand, rand) >= 1);
     
     return rand;
@@ -133,19 +133,21 @@ FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
     
     for(int depth = 0; depth < max_depth; ++depth)
     {
-        if( !h_hit::hit_world(ray, world, obj_size, 0.000001f, 100000.f, record) ) 
-            break;
+        if( !h_hit::hit_world(ray, world, obj_size, 0.001f, 100000.f, record) ) 
+        {            
+            float t = 0.5f * (ray.dir.y + 1.0f);
+            FVec3 color = white*(1.0f - t) + ambient*t;
+            return color * attenuation;
+        }
         
         FVec3 diffused = random_in_unit_sphere(local_rand_state);
         ray = h_ray::create_ray(record.p, record.n + diffused);
     
         attenuation *= coef_attenuation;
     }
-    
-    float t = 0.5f * (ray.dir.y + 1.0f);
-    FVec3 color = white*(1.0f - t) + ambient*t;
-    
-    return color * attenuation;
+       
+    FVec3 black = {0, 0, 0};
+    return black;
 }
 
 
@@ -217,6 +219,9 @@ curandState* rand_state)
         color += to_color(ray, *world, *size, max_depth, local_rand_state);
     }
     color /= float(ns);
+    color.x = sqrtf(color.x);
+    color.y = sqrtf(color.y);
+    color.z = sqrtf(color.z);
     
     fb[index*3+0] = unsigned char(255.99f * color.x);
     fb[index*3+1] = unsigned char(255.99f * color.y);
