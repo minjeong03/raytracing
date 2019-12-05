@@ -18,6 +18,21 @@ char const *const func, const char* file, int const line)
     }
 }
 
+
+__device__ FVec3 random_in_unit_sphere(curandState* local_rand_state)
+{
+    FVec3 rand = {0,0,0};
+    do
+    {        
+        rand.x = 2.f * curand_uniform(local_rand_state) - 1.f;
+        rand.y = 2.f * curand_uniform(local_rand_state) - 1.f;
+        rand.z = 2.f * curand_uniform(local_rand_state) - 1.f;   
+    }while(fvec3_dot(rand, rand) >= 1);
+    
+    return rand;
+}
+
+
 namespace h_ray{
   struct ray
   {
@@ -76,11 +91,16 @@ namespace h_hit{
         return false;
     
     record.t = (t1 > t_min? t1:t2);
+    
+    // These variables below can be computed by t, ray and shape.
     record.p = h_ray::point_at_parameter(ray, record.t);
     record.n = (record.p - sphere.center) / sphere.radius;
     return true;
   }
   
+  
+  // Check if a ray intersects any objects in the world,
+  // returns intersection point, normal, its material
   __device__ bool
   hit_world(const h_ray::ray& ray, h_shape::sphere* world, int obj_size,
   float t_min, float t_max, hit_record& record) 
@@ -104,20 +124,8 @@ namespace h_hit{
   }
 }
 
-__device__ FVec3 random_in_unit_sphere(curandState* local_rand_state)
-{
-    FVec3 rand = {0,0,0};
-    do
-    {        
-        rand.x = 2.f * curand_uniform(local_rand_state) - 1.f;
-        rand.y = 2.f * curand_uniform(local_rand_state) - 1.f;
-        rand.z = 2.f * curand_uniform(local_rand_state) - 1.f;   
-    }while(fvec3_dot(rand, rand) >= 1);
-    
-    return rand;
-}
 
-
+// Path tracing
 __device__ 
 FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
                  int max_depth, curandState* local_rand_state)
@@ -150,6 +158,47 @@ FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
        
     FVec3 black = {0, 0, 0};
     return black;
+}
+
+// Render a pixel by casting a ray from camera to the point on viewport 
+// computed by pixel position and framebuffer size
+__global__
+void render(unsigned char* fb, int max_x, int max_y, int ns,
+FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin,
+h_shape::sphere** world, int* size, int max_depth,
+curandState* rand_state)
+{
+    float i = threadIdx.x + blockIdx.x * blockDim.x;
+    float j = threadIdx.y + blockIdx.y * blockDim.y;
+
+    if(i >= max_x || j >= max_y)
+        return;
+    
+    int index = (j * max_x) + i;
+    curandState* local_rand_state = rand_state+index;
+    
+    FVec3 color = {0,0,0};
+    float max_xf = max_x;
+    float max_yf = max_y;
+    
+    for(int s = 0; s < ns; ++s)
+    {
+        float u = ( i + 1.f - curand_uniform(local_rand_state) ) / max_xf;
+        float v = ( j + 1.f - curand_uniform(local_rand_state) ) / max_yf;
+
+        h_ray::ray ray = h_ray::create_ray(
+            origin, lower_left_corner + horizontal * u + vertical * v);
+        
+        color += to_color(ray, *world, *size, max_depth, local_rand_state);
+    }
+    color /= float(ns);
+    color.x = sqrtf(color.x);
+    color.y = sqrtf(color.y);
+    color.z = sqrtf(color.z);
+    
+    fb[index*3+0] = unsigned char(255.99f * color.x);
+    fb[index*3+1] = unsigned char(255.99f * color.y);
+    fb[index*3+2] = unsigned char(255.99f * color.z);
 }
 
 
@@ -191,45 +240,6 @@ void rand_init(curandState* rand_state, int max_x, int max_y)
     curand_init(1984, index, 0, &rand_state[index]);
 }
 
-__global__
-void render(unsigned char* fb, int max_x, int max_y, int ns,
-FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin,
-h_shape::sphere** world, int* size, int max_depth,
-curandState* rand_state)
-{
-    float i = threadIdx.x + blockIdx.x * blockDim.x;
-    float j = threadIdx.y + blockIdx.y * blockDim.y;
-
-    if(i >= max_x || j >= max_y)
-        return;
-    
-    int index = (j * max_x) + i;
-    curandState* local_rand_state = rand_state+index;
-    
-    FVec3 color = {0,0,0};
-    float max_xf = max_x;
-    float max_yf = max_y;
-    
-    for(int s = 0; s < ns; ++s)
-    {
-        float u = ( i + 1.f - curand_uniform(local_rand_state) ) / max_xf;
-        float v = ( j + 1.f - curand_uniform(local_rand_state) ) / max_yf;
-
-        h_ray::ray ray = h_ray::create_ray(
-            origin, lower_left_corner + horizontal * u + vertical * v);
-        
-        color += to_color(ray, *world, *size, max_depth, local_rand_state);
-    }
-    color /= float(ns);
-    color.x = sqrtf(color.x);
-    color.y = sqrtf(color.y);
-    color.z = sqrtf(color.z);
-    
-    fb[index*3+0] = unsigned char(255.99f * color.x);
-    fb[index*3+1] = unsigned char(255.99f * color.y);
-    fb[index*3+2] = unsigned char(255.99f * color.z);
-}
-
 void print_ppm(unsigned char* fb, int w, int h)
 {
     printf("P3\n%i %i\n255\n", w, h);
@@ -240,7 +250,6 @@ void print_ppm(unsigned char* fb, int w, int h)
         }
     }
 }
-
 
 int main(int argc, char **argv) {
     
