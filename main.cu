@@ -18,7 +18,6 @@ char const *const func, const char* file, int const line)
     }
 }
 
-
 __device__ FVec3 random_in_unit_sphere(curandState* local_rand_state)
 {
     FVec3 rand = {0,0,0};
@@ -31,7 +30,6 @@ __device__ FVec3 random_in_unit_sphere(curandState* local_rand_state)
     
     return rand;
 }
-
 
 namespace h_ray{
   struct ray
@@ -54,86 +52,123 @@ namespace h_ray{
   }
 }
 
-namespace h_shape{
-  struct sphere
-  {
-    FVec3 center;
-    float radius;
-  };
-}
-
-namespace h_hit{
-  struct hit_record
-  {
-      float t;
-      FVec3 p;
-      FVec3 n;
-  };
-  
-  __device__ bool 
-  hit_sphere(const h_ray::ray& ray, const h_shape::sphere& sphere, 
-  float t_min, float t_max, hit_record& record)
-  {
-    FVec3 oc = ray.origin - sphere.center;
+__device__ bool 
+ray_sphere(const h_ray::ray& ray, const FVec3& center, float radius, 
+float t_min, float t_max, float& t)
+{
+    FVec3 oc = ray.origin - center;
     float a = fvec3_dot(ray.dir, ray.dir);
     float b = 2 * fvec3_dot(ray.dir, oc);
-    float c = fvec3_dot(oc, oc) - sphere.radius*sphere.radius;
+    float c = fvec3_dot(oc, oc) - radius*radius;
 
     // use quadratic formula to test p = (origin + dir*t) and sphere for all t
     float discriminant = b*b - 4*a*c;
     if(discriminant < 0)
         return false;
-    
+
     float sqrt_d = sqrtf(discriminant);
     float t1 = (-b-sqrt_d) / 2*a;
     float t2 = (-b+sqrt_d) / 2*a;
     if(t1 > t_max || t2 < t_min)
         return false;
-    
-    record.t = (t1 > t_min? t1:t2);
-    
-    // These variables below can be computed by t, ray and shape.
-    record.p = h_ray::point_at_parameter(ray, record.t);
-    record.n = (record.p - sphere.center) / sphere.radius;
+
+    t = (t1 > t_min? t1:t2);
     return true;
-  }
-  
-  
-  // Check if a ray intersects any objects in the world,
-  // returns intersection point, normal, its material
-  __device__ bool
-  hit_world(const h_ray::ray& ray, h_shape::sphere* world, int obj_size,
-  float t_min, float t_max, hit_record& record) 
-  {
+}
+
+enum shape_type 
+{
+    ST_SPHERE,
+};
+
+struct shape
+{
+    shape_type type;
+    //material mat;
+    union
+    {
+        struct
+        {
+            FVec3 center;
+            float radius;
+        } sphere;
+    } value;
+};
+
+__device__ shape create_sphere(const FVec3& center, float radius)
+{
+    shape sphere;
+    sphere.type = ST_SPHERE;
+    sphere.value.sphere.center = center;
+    sphere.value.sphere.radius = radius;
+    return sphere;
+}
+
+__device__ FVec3 get_normal(const shape& shape, const FVec3& point)
+{
+    switch(shape.type)
+    {
+        case ST_SPHERE:
+        {
+            return ( point - shape.value.sphere.center ) / shape.value.sphere.radius;
+        }break;
+    }
+    
+    return {0,0,0};
+}
+
+__device__ bool shape_ray_hit(const shape& shape, const h_ray::ray& ray, 
+float t_min, float t_max, float& t)
+{
+    switch(shape.type)
+    {
+        case ST_SPHERE:
+        {
+            return ray_sphere(
+            ray, shape.value.sphere.center, shape.value.sphere.radius,
+            t_min, t_max, t);
+        }break;
+    }
+    
+    return false;
+}  
+
+struct hit_record
+{
+  float t;
+  shape* shape;
+};
+
+// Check if a ray intersects any objects in the world,
+// returns true and record is written to t and shape intersected by the ray if hit, 
+// otherwise return false
+__device__ 
+bool ray_shapes(const h_ray::ray& ray, shape shapes[], int num_shapes,
+float t_min, float t_max, hit_record& record) 
+{
     bool hit = false;
     float closest_t = t_max;
-    hit_record temp;
-    for(int i = 0; i < obj_size; ++i)
+    for(int i = 0; i < num_shapes; ++i)
     {
-        if(hit_sphere(ray, world[i], t_min, t_max, temp))
+        if(shape_ray_hit(shapes[i], ray, t_min, closest_t, closest_t))
         {
+            record.t = closest_t;
+            record.shape = shapes+i;
             hit = true;
-            if(temp.t < closest_t)
-            {
-                record = temp;
-                closest_t = record.t;
-            }
         }
     }
     return hit;
-  }
 }
-
 
 // Path tracing
 __device__ 
-FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
+FVec3 to_color(const h_ray::ray& init_ray, shape shapes[], int num_shapes,
                  int max_depth, curandState* local_rand_state)
 {
     FVec3 white = {1.0f, 1.0f, 1.0f};              
     FVec3 ambient = {0.5f, 0.7f, 1.0f};
 
-    h_hit::hit_record record;
+    hit_record record;
     h_ray::ray ray = init_ray;
     
     float coef_attenuation = 0.5f;
@@ -143,7 +178,7 @@ FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
     {
         // t_min = 0.0000001 --> artifact 
         // t_min = 0.001
-        if( !h_hit::hit_world(ray, world, obj_size, 0.001f, 100000.f, record) ) 
+        if( !ray_shapes(ray, shapes, num_shapes, 0.001f, 100000.f, record) ) 
         {            
             float t = 0.5f * (ray.dir.y + 1.0f);
             FVec3 color = white*(1.0f - t) + ambient*t;
@@ -151,7 +186,11 @@ FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
         }
         
         FVec3 diffused = random_in_unit_sphere(local_rand_state);
-        ray = h_ray::create_ray(record.p, record.n + diffused);
+        
+        FVec3 point = h_ray::point_at_parameter(ray, record.t);        
+        FVec3 normal = get_normal( *record.shape, point );
+        
+        ray = h_ray::create_ray(point, normal + diffused);
     
         attenuation *= coef_attenuation;
     }
@@ -165,7 +204,7 @@ FVec3 to_color(const h_ray::ray& init_ray, h_shape::sphere* world, int obj_size,
 __global__
 void render(unsigned char* fb, int max_x, int max_y, int ns,
 FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin,
-h_shape::sphere** world, int* size, int max_depth,
+shape** world, int* size, int max_depth,
 curandState* rand_state)
 {
     float i = threadIdx.x + blockIdx.x * blockDim.x;
@@ -203,22 +242,20 @@ curandState* rand_state)
 
 
 __global__
-void create_world(h_shape::sphere** world, int* obj_size)
+void create_world(shape** world, int* obj_size)
 {
     if(threadIdx.x == 0 && blockIdx.x == 0) {
         *obj_size = 2;
-        *world = (h_shape::sphere*)malloc(sizeof(h_shape::sphere) * (*obj_size));
+        *world = (shape*)malloc(sizeof(shape) * (*obj_size));
         
-        h_shape::sphere* s = *world;
-        s[0].center = {0, 0, -1};
-        s[0].radius = 0.5f;
-        s[1].center = {0, -100.5f, -1};
-        s[1].radius = 100.f;
+        shape* s = *world;
+        s[0] = create_sphere({0, 0, -1}, 0.5f);
+        s[1] = create_sphere({0, -100.5f, -1}, 100.f);
     }
 }
 
 __global__
-void free_world(h_shape::sphere** world)
+void free_world(shape** world)
 {
     if(threadIdx.x == 0 && blockIdx.x == 0) {
         free(*world);
@@ -279,9 +316,9 @@ int main(int argc, char **argv) {
     
     
     // Allocate variables that are passed to and used in the device
-    h_shape::sphere** dev_world;
+    shape** dev_world;
     int* dev_num_obj;
-    checkCudaError( cudaMalloc(&dev_world, sizeof(h_shape::sphere**)) );
+    checkCudaError( cudaMalloc(&dev_world, sizeof(shape**)) );
     checkCudaError( cudaMalloc(&dev_num_obj, sizeof(int)) );
   
     // Initialize objects in the world
