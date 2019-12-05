@@ -259,11 +259,46 @@ FVec3 to_color(const h_ray::ray& init_ray, shape shapes[], int num_shapes,
     return black;
 }
 
+struct camera
+{    
+    FVec3 pos;
+    float aspect_ratio;
+    float h;
+    
+    // private
+    FVec3 lower_left_corner;
+    FVec3 horizontal;
+    FVec3 vertical;
+    float w; 
+};
+
+__device__
+camera create_camera(const FVec3& pos, float aspect_ratio, float view_h)
+{
+    camera cam;
+    
+    cam.pos = pos;
+    cam.aspect_ratio = aspect_ratio;
+    cam.h = view_h;
+    
+    cam.w = cam.aspect_ratio * cam.h;
+    cam.lower_left_corner = {-cam.w/2.f, -cam.h/2.f, -1};
+    cam.horizontal = {cam.w, 0, 0};
+    cam.vertical= {0, cam.h, 0};  
+    return cam;
+}
+
+__device__
+h_ray::ray get_ray_at(const camera& cam, float u, float v)
+{
+    return h_ray::create_ray( cam.pos, 
+    cam.lower_left_corner + cam.horizontal * u + cam.vertical * v );
+}
+
 
 __global__
 void render(unsigned char* fb, int max_x, int max_y, int ns,
-FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin,
-shape** world, int* size, int max_depth,
+camera** camera, shape** world, int* size, int max_depth,
 curandState* rand_state)
 {
 // Render a pixel by casting a ray from camera to the point on viewport 
@@ -286,8 +321,7 @@ curandState* rand_state)
         float u = ( i + 1.f - curand_uniform(local_rand_state) ) / max_xf;
         float v = ( j + 1.f - curand_uniform(local_rand_state) ) / max_yf;
 
-        h_ray::ray ray = h_ray::create_ray(
-            origin, lower_left_corner + horizontal * u + vertical * v);
+        h_ray::ray ray = get_ray_at(**camera, u, v);
         
         color += to_color(ray, *world, *size, max_depth, local_rand_state);
     }
@@ -302,11 +336,13 @@ curandState* rand_state)
 }
 
 
-
 __global__
-void create_world(shape** world, int* obj_size)
+void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size)
 {
     if(threadIdx.x == 0 && blockIdx.x == 0) {
+        *cam = (camera*)malloc(sizeof(camera));
+        **cam = create_camera( {0,0,0}, aspect_ratio, 2 );
+        
         *obj_size = 2;
         *world = (shape*)malloc(sizeof(shape) * (*obj_size));
         
@@ -319,13 +355,13 @@ void create_world(shape** world, int* obj_size)
 }
 
 __global__
-void free_world(shape** world)
+void free_world(shape** world, camera** camera)
 {
     if(threadIdx.x == 0 && blockIdx.x == 0) {
         free(*world);
+        free(*camera);
     }
 }
-
 
 
 __global__
@@ -386,25 +422,18 @@ int main(int argc, char **argv) {
     // Allocate variables that are passed to and used in the device
     shape** dev_world;
     int* dev_num_obj;
+    camera** dev_cam;
     checkCudaError( cudaMalloc(&dev_world, sizeof(shape**)) );
     checkCudaError( cudaMalloc(&dev_num_obj, sizeof(int)) );
+    checkCudaError( cudaMalloc(&dev_cam, sizeof(camera**)) );
   
     // Initialize objects in the world
-    create_world<<<1,1>>>(dev_world, dev_num_obj);
+    create_world<<<1,1>>>(dev_cam, float(ny)/nx, dev_world, dev_num_obj);
     checkCudaError( cudaGetLastError() );
     checkCudaError( cudaDeviceSynchronize() );
     
     
-    // Initialize the camera and the view variables in the world
-    float aspect_ratio = float(nx)/ ny;
-    float h = 2;
-    float w = aspect_ratio * h; 
-    FVec3 lower_left_corner = {-w/2.f, -h/2.f, -1};
-    FVec3 horizontal = {w, 0, 0};
-    FVec3 vertical = {0, h, 0};
-    FVec3 camera_pos = {0,0,0};
 
-    
     // Determine the number of threads and blocks
     int thread_x = 8;
     int thread_y = 8;
@@ -424,15 +453,14 @@ int main(int argc, char **argv) {
     // Render objs in the framebuffer
     int max_depth = 25;
     render<<<blocks, threads>>>( fb, nx, ny, ns,
-                                 lower_left_corner, horizontal, vertical, camera_pos, 
-                                 dev_world, dev_num_obj, max_depth,
+                                 dev_cam, dev_world, dev_num_obj, max_depth,
                                  dev_rand_state);
     checkCudaError( cudaGetLastError() );
     checkCudaError( cudaDeviceSynchronize() );
   
   
     // Deallocate objs in world
-    free_world<<<1,1>>>(dev_world);
+    free_world<<<1,1>>>(dev_world, dev_cam);
     checkCudaError( cudaGetLastError() );
     checkCudaError( cudaDeviceSynchronize() );
       
@@ -440,6 +468,7 @@ int main(int argc, char **argv) {
     // Deallocate heap world variables
     checkCudaError( cudaFree(dev_world) );
     checkCudaError( cudaFree(dev_num_obj) );
+    checkCudaError( cudaFree(dev_cam) );
     
     // Deallocate random states
     checkCudaError( cudaFree(dev_rand_state) );
