@@ -76,6 +76,55 @@ float t_min, float t_max, float& t)
     return true;
 }
 
+/**
+*
+*
+*
+*
+*/
+enum material_type
+{
+    MT_LAMBERTIAN,
+};
+
+struct material
+{
+    material_type type;
+    FVec3 albedo;
+};
+
+__device__ bool scatter_ray(const material& mat, 
+const h_ray::ray& ray, const FVec3& surface_normal,
+curandState* local_rand_state,
+FVec3& scattered_raydir)
+{
+    switch(mat.type)
+    {
+        case MT_LAMBERTIAN:
+        {
+            scattered_raydir = fvec3_normalize(
+            surface_normal + random_in_unit_sphere(local_rand_state));
+            return true;
+        }break;
+    }
+    
+    return false;
+}
+
+__device__ material create_lambertian(const FVec3& albedo)
+{
+    material mat;
+    mat.type = MT_LAMBERTIAN;
+    mat.albedo = albedo;
+    return mat;
+}
+
+/**
+*
+*
+*
+*
+*/
 enum shape_type 
 {
     ST_SPHERE,
@@ -84,7 +133,7 @@ enum shape_type
 struct shape
 {
     shape_type type;
-    //material mat;
+    material mat;
     union
     {
         struct
@@ -95,16 +144,17 @@ struct shape
     } value;
 };
 
-__device__ shape create_sphere(const FVec3& center, float radius)
+__device__ shape create_sphere(const material& mat, const FVec3& center, float radius)
 {
     shape sphere;
     sphere.type = ST_SPHERE;
+    sphere.mat  = mat;
     sphere.value.sphere.center = center;
     sphere.value.sphere.radius = radius;
     return sphere;
 }
 
-__device__ FVec3 get_normal(const shape& shape, const FVec3& point)
+__device__ FVec3 get_normal_at(const shape& shape, const FVec3& point)
 {
     switch(shape.type)
     {
@@ -133,19 +183,27 @@ float t_min, float t_max, float& t)
     return false;
 }  
 
+
+
+/**
+*
+*
+*
+*
+*/
 struct hit_record
 {
   float t;
   shape* shape;
 };
 
-// Check if a ray intersects any objects in the world,
-// returns true and record is written to t and shape intersected by the ray if hit, 
-// otherwise return false
 __device__ 
 bool ray_shapes(const h_ray::ray& ray, shape shapes[], int num_shapes,
 float t_min, float t_max, hit_record& record) 
 {
+// Check if a ray intersects any objects in the world,
+// returns true and record written with t and shape intersected by the ray if hit, 
+// otherwise return false
     bool hit = false;
     float closest_t = t_max;
     for(int i = 0; i < num_shapes; ++i)
@@ -160,53 +218,56 @@ float t_min, float t_max, hit_record& record)
     return hit;
 }
 
-// Path tracing
+
+
 __device__ 
 FVec3 to_color(const h_ray::ray& init_ray, shape shapes[], int num_shapes,
                  int max_depth, curandState* local_rand_state)
 {
+// Path tracing
     FVec3 white = {1.0f, 1.0f, 1.0f};              
     FVec3 ambient = {0.5f, 0.7f, 1.0f};
 
     hit_record record;
     h_ray::ray ray = init_ray;
     
-    float coef_attenuation = 0.5f;
-    float attenuation = 1.f;
-    
+    float t = 0.5f * (ray.dir.y + 1.0f);
+    FVec3 color = white*(1.0f - t) + ambient*t;
+          
     for(int depth = 0; depth < max_depth; ++depth)
     {
         // t_min = 0.0000001 --> artifact 
         // t_min = 0.001
         if( !ray_shapes(ray, shapes, num_shapes, 0.001f, 100000.f, record) ) 
         {            
-            float t = 0.5f * (ray.dir.y + 1.0f);
-            FVec3 color = white*(1.0f - t) + ambient*t;
-            return color * attenuation;
+            return color;
         }
         
-        FVec3 diffused = random_in_unit_sphere(local_rand_state);
-        
         FVec3 point = h_ray::point_at_parameter(ray, record.t);        
-        FVec3 normal = get_normal( *record.shape, point );
+        FVec3 normal = get_normal_at( *record.shape, point );
+        FVec3 diffuse;
+        if( !scatter_ray( record.shape->mat, ray, normal,
+        local_rand_state, diffuse)) {
+            break;
+        }
         
-        ray = h_ray::create_ray(point, normal + diffused);
-    
-        attenuation *= coef_attenuation;
+        ray = h_ray::create_ray(point, normal + diffuse);
+        color *= record.shape->mat.albedo;
     }
        
     FVec3 black = {0, 0, 0};
     return black;
 }
 
-// Render a pixel by casting a ray from camera to the point on viewport 
-// computed by pixel position and framebuffer size
+
 __global__
 void render(unsigned char* fb, int max_x, int max_y, int ns,
 FVec3 lower_left_corner, FVec3 horizontal, FVec3 vertical, FVec3 origin,
 shape** world, int* size, int max_depth,
 curandState* rand_state)
 {
+// Render a pixel by casting a ray from camera to the point on viewport 
+// computed by pixel position and framebuffer size
     float i = threadIdx.x + blockIdx.x * blockDim.x;
     float j = threadIdx.y + blockIdx.y * blockDim.y;
 
@@ -241,6 +302,7 @@ curandState* rand_state)
 }
 
 
+
 __global__
 void create_world(shape** world, int* obj_size)
 {
@@ -249,8 +311,10 @@ void create_world(shape** world, int* obj_size)
         *world = (shape*)malloc(sizeof(shape) * (*obj_size));
         
         shape* s = *world;
-        s[0] = create_sphere({0, 0, -1}, 0.5f);
-        s[1] = create_sphere({0, -100.5f, -1}, 100.f);
+        s[0] = create_sphere(create_lambertian({0.8f, 0.3f, 0.3f}),
+                            {0, 0, -1}, 0.5f);
+        s[1] = create_sphere(create_lambertian({0.8f, 0.8f, 0.0f}),
+                            {0, -100.5f, -1}, 100.f);
     }
 }
 
@@ -261,6 +325,8 @@ void free_world(shape** world)
         free(*world);
     }
 }
+
+
 
 __global__
 void rand_init(curandState* rand_state, int max_x, int max_y)
@@ -276,6 +342,8 @@ void rand_init(curandState* rand_state, int max_x, int max_y)
     // Each thread gets same seed, a different sequence number, no offset
     curand_init(1984, index, 0, &rand_state[index]);
 }
+
+
 
 void print_ppm(unsigned char* fb, int w, int h)
 {
