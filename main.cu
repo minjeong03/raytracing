@@ -75,7 +75,42 @@ float t_min, float t_max, float& t)
     t = (t1 > t_min? t1:t2);
     return true;
 }
+/**
+*
+*
+*
+*
+*/
 
+__device__
+float schlick(float cos, float ref_idx)
+{   
+//real glass has reflectivity that varies with angle
+//simple polynomial approximation by Christophe Schlick
+    float r0 = (1.0f - ref_idx) / ( 1.0f + ref_idx );
+    r0 = r0*r0;
+    return r0 + (1-r0)*powf(1-cos, 5);
+}
+
+__device__
+FVec3 reflect(const FVec3& vec, const FVec3& normal)
+{
+    return vec - normal*2*fvec3_dot(vec, normal);
+}
+
+__device__
+bool refract(const FVec3& vec, const FVec3& normal, float ni_over_nt, FVec3& refracted)
+{
+    FVec3 unit_vec = fvec3_normalize(vec);
+    float dt = fvec3_dot(unit_vec, normal);
+    float discriminant = 1.0f - ni_over_nt*ni_over_nt *( 1.0f - dt*dt );
+    if(discriminant > 0)
+    {
+        refracted = (unit_vec - normal*dt) * ni_over_nt - normal*sqrtf(discriminant);
+        return true;
+    }
+    return false;
+}
 /**
 *
 *
@@ -85,12 +120,20 @@ float t_min, float t_max, float& t)
 enum material_type
 {
     MT_LAMBERTIAN,
+    MT_METAL,
+    MT_DIELECTRIC,
 };
 
 struct material
 {
     material_type type;
     FVec3 albedo;
+    union
+    {
+        float fuzz;
+        float ref_idx;
+        
+    } value;
 };
 
 __device__ bool scatter_ray(const material& mat, 
@@ -106,6 +149,50 @@ FVec3& scattered_raydir)
             surface_normal + random_in_unit_sphere(local_rand_state));
             return true;
         }break;
+        
+        case MT_METAL:
+        {
+            FVec3 reflection = reflect(ray.dir, surface_normal);
+            scattered_raydir = reflection + 
+            random_in_unit_sphere(local_rand_state) * mat.value.fuzz;
+            return (fvec3_dot(scattered_raydir, surface_normal) > 0);
+        }break;
+        
+        case MT_DIELECTRIC:
+        {
+            FVec3 reflection = reflect(ray.dir, surface_normal);
+            float ni_over_nt = 0;
+            FVec3 outward_normal;
+            float cos = 0;
+
+            float dot = fvec3_dot(ray.dir, surface_normal);
+            if(dot > 0)
+            {
+                outward_normal = surface_normal * -1;
+                ni_over_nt = mat.value.ref_idx;
+                cos = mat.value.ref_idx * dot;
+            }
+            else
+            {
+                outward_normal = surface_normal;
+                ni_over_nt = 1.0f / mat.value.ref_idx;
+                cos = -dot;
+            }
+            
+            FVec3 refraction;
+            float reflection_prop = 1.0f;
+            if(refract(ray.dir, outward_normal, ni_over_nt, refraction))
+            {
+                reflection_prop = schlick(cos, mat.value.ref_idx);
+                scattered_raydir = refraction;
+            }
+            
+            if( curand_uniform(local_rand_state) < reflection_prop )
+            {
+                scattered_raydir = reflection;
+            }
+            return true;
+        }break;
     }
     
     return false;
@@ -116,6 +203,24 @@ __device__ material create_lambertian(const FVec3& albedo)
     material mat;
     mat.type = MT_LAMBERTIAN;
     mat.albedo = albedo;
+    return mat;
+}
+
+__device__ material create_metal(const FVec3& albedo, float fuzz)
+{
+    material mat;
+    mat.type = MT_METAL;
+    mat.albedo = albedo;
+    mat.value.fuzz = fuzz;
+    return mat;
+}
+
+__device__ material create_dielectric(float ref_idx)
+{
+    material mat;
+    mat.type = MT_DIELECTRIC;
+    mat.albedo = {1,1,1};
+    mat.value.ref_idx = ref_idx;
     return mat;
 }
 
@@ -341,9 +446,9 @@ void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size
 {
     if(threadIdx.x == 0 && blockIdx.x == 0) {
         *cam = (camera*)malloc(sizeof(camera));
-        **cam = create_camera( {0,0,0}, aspect_ratio, 2 );
+        **cam = create_camera( {0,0,0}, aspect_ratio, 4);
         
-        *obj_size = 2;
+        *obj_size = 4;
         *world = (shape*)malloc(sizeof(shape) * (*obj_size));
         
         shape* s = *world;
@@ -351,6 +456,16 @@ void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size
                             {0, 0, -1}, 0.5f);
         s[1] = create_sphere(create_lambertian({0.8f, 0.8f, 0.0f}),
                             {0, -100.5f, -1}, 100.f);
+        s[2] = create_sphere(create_metal({0.8f, 0.6f, 0.2f}, 0.0f),
+                            {1, 0, -1}, 0.5f);        
+        s[3] = create_sphere(create_metal({0.8f, 0.6f, 0.2f}, 1.0f),
+                            {-1, 0, -1}, 0.5f);
+                            
+                            
+        // s[3] = create_sphere(create_dielectric(1.5f),
+                            // {-1, 0, -1}, 0.5f);
+        // s[4] = create_sphere(create_dielectric(1.5f),
+                            // {-1, 0, -1}, -0.45f);
     }
 }
 
@@ -433,7 +548,6 @@ int main(int argc, char **argv) {
     checkCudaError( cudaDeviceSynchronize() );
     
     
-
     // Determine the number of threads and blocks
     int thread_x = 8;
     int thread_y = 8;
