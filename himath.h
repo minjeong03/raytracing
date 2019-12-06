@@ -23,6 +23,7 @@ typedef struct IVec2_
 } IVec2;
 
 #ifdef __cplusplus
+HIMATH_ATTRIB IVec2 operator-(IVec2 v);
 HIMATH_ATTRIB IVec2 operator+(IVec2 a, IVec2 b);
 HIMATH_ATTRIB IVec2 operator-(IVec2 a, IVec2 b);
 HIMATH_ATTRIB IVec2 operator*(IVec2 a, IVec2 b);
@@ -32,6 +33,7 @@ HIMATH_ATTRIB IVec2& operator-=(IVec2& a, IVec2 b);
 HIMATH_ATTRIB IVec2& operator*=(IVec2& a, IVec2 b);
 HIMATH_ATTRIB IVec2& operator/=(IVec2& a, IVec2 b);
 #endif //__cplusplus
+HIMATH_ATTRIB IVec2 ivec2_negate(IVec2 v);
 HIMATH_ATTRIB IVec2 ivec2_add(IVec2 a, IVec2 b);
 HIMATH_ATTRIB IVec2 ivec2_sub(IVec2 a, IVec2 b);
 HIMATH_ATTRIB IVec2 ivec2_mul(IVec2 a, IVec2 b);
@@ -44,6 +46,7 @@ typedef struct FVec2_
 
 #ifdef __cplusplus
 
+HIMATH_ATTRIB FVec2 operator-(FVec2 v);
 HIMATH_ATTRIB FVec2 operator+(FVec2 a, FVec2 b);
 HIMATH_ATTRIB FVec2 operator-(FVec2 a, FVec2 b);
 HIMATH_ATTRIB FVec2 operator*(FVec2 a, FVec2 b);
@@ -55,6 +58,7 @@ HIMATH_ATTRIB FVec2& operator/=(FVec2& a, FVec2 b);
 
 #endif //__cplusplus
 
+HIMATH_ATTRIB FVec2 fvec2_negate(FVec2 v);
 HIMATH_ATTRIB FVec2 fvec2_add(FVec2 a, FVec2 b);
 HIMATH_ATTRIB FVec2 fvec2_sub(FVec2 a, FVec2 b);
 HIMATH_ATTRIB FVec2 fvec2_mul(FVec2 a, FVec2 b);
@@ -66,6 +70,7 @@ typedef struct FVec3_
 } FVec3;
 
 #ifdef __cplusplus
+HIMATH_ATTRIB FVec3 operator-(FVec3 v);
 HIMATH_ATTRIB FVec3 operator+(FVec3 a, FVec3 b);
 HIMATH_ATTRIB FVec3 operator-(FVec3 a, FVec3 b);
 HIMATH_ATTRIB FVec3 operator*(FVec3 a, FVec3 b);
@@ -78,6 +83,7 @@ HIMATH_ATTRIB FVec3& operator*=(FVec3& a, FVec3 b);
 HIMATH_ATTRIB FVec3& operator/=(FVec3& a, FVec3 b);
 #endif //__cplusplus
 
+HIMATH_ATTRIB FVec3 fvec3_negate(FVec3 v);
 HIMATH_ATTRIB FVec3 fvec3_add(FVec3 a, FVec3 b);
 HIMATH_ATTRIB FVec3 fvec3_sub(FVec3 a, FVec3 b);
 HIMATH_ATTRIB FVec3 fvec3_mul(FVec3 a, FVec3 b);
@@ -161,6 +167,10 @@ HIMATH_ATTRIB float degtorad(float deg)
 
 #ifdef __cplusplus
 
+HIMATH_ATTRIB IVec2 operator-(IVec2 v)
+{
+    return ivec2_negate(v);
+}
 HIMATH_ATTRIB IVec2 operator+(IVec2 a, IVec2 b)
 {
     return ivec2_add(a, b);
@@ -196,6 +206,11 @@ HIMATH_ATTRIB IVec2& operator/=(IVec2& a, IVec2 b)
 
 #endif
 
+HIMATH_ATTRIB IVec2 ivec2_negate(IVec2 v)
+{
+    IVec2 result = {-v.x, -v.y};
+    return result;
+}
 HIMATH_ATTRIB IVec2 ivec2_add(IVec2 a, IVec2 b)
 {
     IVec2 result = {a.x + b.x, a.y + b.y};
@@ -219,6 +234,10 @@ HIMATH_ATTRIB IVec2 ivec2_div(IVec2 a, IVec2 b)
 
 #ifdef __cplusplus
 
+HIMATH_ATTRIB FVec2 operator-(FVec2 v)
+{
+    return fvec2_negate(v);
+}
 HIMATH_ATTRIB FVec2 operator+(FVec2 a, FVec2 b)
 {
     return fvec2_add(a, b);
@@ -254,6 +273,11 @@ HIMATH_ATTRIB FVec2& operator/=(FVec2& a, FVec2 b)
 
 #endif //__cplusplus
 
+HIMATH_ATTRIB FVec2 fvec2_negate(FVec2 v)
+{
+    FVec2 result = {-v.x, -v.y};
+    return result;
+}
 HIMATH_ATTRIB FVec2 fvec2_add(FVec2 a, FVec2 b)
 {
     FVec2 result = {a.x + b.x, a.y + b.y};
@@ -277,6 +301,10 @@ HIMATH_ATTRIB FVec2 fvec2_div(FVec2 a, FVec2 b)
 
 #ifdef __cplusplus
 
+HIMATH_ATTRIB FVec3 operator-(FVec3 v)
+{
+    return fvec3_negate(v);
+}
 HIMATH_ATTRIB FVec3 operator+(FVec3 a, FVec3 b)
 {
     return fvec3_add(a, b);
@@ -328,6 +356,11 @@ HIMATH_ATTRIB FVec3& operator/=(FVec3& v, float s)
 
 #endif //__cplusplus
 
+HIMATH_ATTRIB FVec3 fvec3_negate(FVec3 v)
+{
+    FVec3 result = {-v.x, -v.y, -v.z};
+    return result;
+}
 HIMATH_ATTRIB FVec3 fvec3_add(FVec3 a, FVec3 b)
 {
     FVec3 result = {a.x + b.x, a.y + b.y, a.z + b.z};

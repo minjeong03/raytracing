@@ -407,6 +407,32 @@ camera create_camera(const FVec3& pos, float aspect_ratio, float vfovDeg)
 }
 
 __device__
+camera create_camera(const FVec3& pos, const FVec3& lookAt, const FVec3& vup,
+float aspect_ratio, float vfovDeg)
+{
+    camera cam;
+    
+    cam.pos = pos;
+    cam.aspect_ratio = aspect_ratio;
+    cam.vfov = to_radians(vfovDeg);
+    float half_h = tan(cam.vfov/2);
+    float half_w = aspect_ratio * half_h;
+    cam.w = half_w * 2;
+    cam.h = half_h * 2;
+    
+    FVec3 view, right, up;
+    // from pos to lookAt is view direction; which is -view
+    view = fvec3_normalize(pos - lookAt); 
+    right = fvec3_normalize(fvec3_cross(vup, view));
+    up = fvec3_cross(view, right);
+    
+    cam.lower_left_corner = cam.pos - right*half_w - up*half_h -view;
+    cam.horizontal = right*cam.w;
+    cam.vertical= up*cam.h;  
+    return cam; 
+}
+
+__device__
 h_ray::ray get_ray_at(const camera& cam, float u, float v)
 {
     return h_ray::create_ray( cam.pos, 
@@ -453,28 +479,55 @@ curandState* rand_state)
     fb[index*3+2] = unsigned char(255.99f * color.z);
 }
 
+__device__ void create_cam1(camera** cam, float aspect_ratio)
+{
+    *cam = (camera*)malloc(sizeof(camera));
+    **cam = create_camera( {-2,+2,1}, {0,0,-1}, {0,1,0}, aspect_ratio, 90);
+}
+__device__ void create_cam2(camera** cam, float aspect_ratio)
+{
+    *cam = (camera*)malloc(sizeof(camera));
+    **cam = create_camera( {0,0,0}, {0,0,-1}, {0,1,0}, aspect_ratio, 90);
+}
+
+__device__ void create_scene1(shape** world, int* obj_size) 
+{
+    *obj_size = 5;
+    *world = (shape*)malloc(sizeof(shape) * (*obj_size));
+
+    shape* s = *world;
+    s[0] = create_sphere(create_lambertian({0.8f, 0.3f, 0.3f}),
+                        {0, 0, -1}, 0.5f);
+    s[1] = create_sphere(create_lambertian({0.8f, 0.8f, 0.0f}),
+                        {0, -100.5f, -1}, 100.f);
+    s[2] = create_sphere(create_metal({0.8f, 0.6f, 0.2f}, 0.0f),
+                        {1, 0, -1}, 0.5f);
+    s[3] = create_sphere(create_dielectric(1.5f),
+                        {-1, 0, -1}, 0.5f);
+    s[4] = create_sphere(create_dielectric(1.5f),
+                        {-1, 0, -1}, -0.49f);
+}
+
+__device__ void create_scene2(shape** world, int* obj_size) 
+{
+    *obj_size = 2;
+    *world = (shape*)malloc(sizeof(shape) * (*obj_size));
+
+    shape* s = *world;
+    
+    float R = cos( to_radians(45) );
+    s[0] = create_sphere(create_lambertian({0, 0.3f, 0.8f}),
+                        {-R, 0, -1}, R);
+    s[1] = create_sphere(create_lambertian({0.8f, 0.3f, 0.0f}),
+                        {R,  0, -1}, R);
+}
 
 __global__
 void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size)
 {
     if(threadIdx.x == 0 && blockIdx.x == 0) {
-        *cam = (camera*)malloc(sizeof(camera));
-        **cam = create_camera( {0,0,0}, aspect_ratio, 90);
-        
-        *obj_size = 5;
-        *world = (shape*)malloc(sizeof(shape) * (*obj_size));
-        
-        shape* s = *world;
-        s[0] = create_sphere(create_lambertian({0.8f, 0.3f, 0.3f}),
-                            {0, 0, -1}, 0.5f);
-        s[1] = create_sphere(create_lambertian({0.8f, 0.8f, 0.0f}),
-                            {0, -100.5f, -1}, 100.f);
-        s[2] = create_sphere(create_metal({0.8f, 0.6f, 0.2f}, 0.0f),
-                            {1, 0, -1}, 0.5f);
-        s[3] = create_sphere(create_dielectric(1.5f),
-                            {-1, 0, -1}, 0.5f);
-        s[4] = create_sphere(create_dielectric(1.5f),
-                            {-1, 0, -1}, -0.49f);
+        create_cam1(cam, aspect_ratio);    
+        create_scene1(world, obj_size);
     }
 }
 
