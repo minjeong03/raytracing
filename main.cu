@@ -371,26 +371,36 @@ struct camera
 {    
     FVec3 pos;
     float aspect_ratio;
-    float h;
+    float vfov;
     
     // private
     FVec3 lower_left_corner;
     FVec3 horizontal;
     FVec3 vertical;
+    float h;
     float w; 
 };
 
+__device__ float to_radians(float deg)
+{
+    return deg * 3.14159265359f / 180.f;
+}
+
 __device__
-camera create_camera(const FVec3& pos, float aspect_ratio, float view_h)
+camera create_camera(const FVec3& pos, float aspect_ratio, float vfovDeg)
 {
     camera cam;
     
     cam.pos = pos;
     cam.aspect_ratio = aspect_ratio;
-    cam.h = view_h;
+    cam.vfov = to_radians(vfovDeg);
+    float half_h = tan(cam.vfov/2);
+    float half_w = aspect_ratio * half_h;
     
-    cam.w = cam.aspect_ratio * cam.h;
-    cam.lower_left_corner = {-cam.w/2.f, -cam.h/2.f, -1};
+    cam.w = half_w * 2;
+    cam.h = half_h * 2;
+    
+    cam.lower_left_corner = {-half_w, -half_h, -1};
     cam.horizontal = {cam.w, 0, 0};
     cam.vertical= {0, cam.h, 0};  
     return cam;
@@ -449,7 +459,7 @@ void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size
 {
     if(threadIdx.x == 0 && blockIdx.x == 0) {
         *cam = (camera*)malloc(sizeof(camera));
-        **cam = create_camera( {0,0,0}, aspect_ratio, 4);
+        **cam = create_camera( {0,0,0}, aspect_ratio, 90);
         
         *obj_size = 5;
         *world = (shape*)malloc(sizeof(shape) * (*obj_size));
@@ -464,7 +474,7 @@ void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size
         s[3] = create_sphere(create_dielectric(1.5f),
                             {-1, 0, -1}, 0.5f);
         s[4] = create_sphere(create_dielectric(1.5f),
-                            {-1, 0, -1}, -0.45f);
+                            {-1, 0, -1}, -0.49f);
     }
 }
 
