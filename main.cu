@@ -102,11 +102,12 @@ __device__
 bool refract(const FVec3& vec, const FVec3& normal, float ni_over_nt, FVec3& refracted)
 {
     FVec3 unit_vec = fvec3_normalize(vec);
-    float dt = fvec3_dot(unit_vec, normal);
-    float discriminant = 1.0f - ni_over_nt*ni_over_nt *( 1.0f - dt*dt );
+    float dot = fvec3_dot(unit_vec, normal);
+    float discriminant = 1.0f - ni_over_nt*ni_over_nt *( 1.0f - dot*dot );
     if(discriminant > 0)
     {
-        refracted = (unit_vec - normal*dt) * ni_over_nt - normal*sqrtf(discriminant);
+        //refracted = normal*(ni_over_nt*dot - sqrtf(discriminant)) - unit_vec* ni_over_nt;
+        refracted = (unit_vec-normal*dot)*ni_over_nt - normal*sqrtf(discriminant);
         return true;
     }
     return false;
@@ -219,7 +220,7 @@ __device__ material create_dielectric(float ref_idx)
 {
     material mat;
     mat.type = MT_DIELECTRIC;
-    mat.albedo = {1,1,1};
+    mat.albedo = {1.0f,1.0f,1.0f};
     mat.value.ref_idx = ref_idx;
     return mat;
 }
@@ -311,10 +312,12 @@ float t_min, float t_max, hit_record& record)
 // otherwise return false
     bool hit = false;
     float closest_t = t_max;
+    float temp = 0;
     for(int i = 0; i < num_shapes; ++i)
     {
-        if(shape_ray_hit(shapes[i], ray, t_min, closest_t, closest_t))
+        if(shape_ray_hit(shapes[i], ray, t_min, closest_t, temp))
         {
+            closest_t = temp;
             record.t = closest_t;
             record.shape = shapes+i;
             hit = true;
@@ -330,37 +333,37 @@ FVec3 to_color(const h_ray::ray& init_ray, shape shapes[], int num_shapes,
                  int max_depth, curandState* local_rand_state)
 {
 // Path tracing
-    FVec3 white = {1.0f, 1.0f, 1.0f};              
-    FVec3 ambient = {0.5f, 0.7f, 1.0f};
-
+    FVec3 white = {1.0f, 1.0f, 1.0f};    
+    FVec3 black = {0, 0, 0};
+    
     hit_record record;
     h_ray::ray ray = init_ray;
     
-    float t = 0.5f * (ray.dir.y + 1.0f);
-    FVec3 color = white*(1.0f - t) + ambient*t;
+    FVec3 attenuation = white;
           
     for(int depth = 0; depth < max_depth; ++depth)
     {
-        // t_min = 0.0000001 --> artifact 
-        // t_min = 0.001
         if( !ray_shapes(ray, shapes, num_shapes, 0.001f, 100000.f, record) ) 
         {            
-            return color;
+            float t = 0.5f * (ray.dir.y + 1.0f);          
+            FVec3 ambient = {0.5f, 0.7f, 1.0f};
+            FVec3 color = white*(1.0f - t) + ambient*t;
+            return color * attenuation;
         }
         
         FVec3 point = h_ray::point_at_parameter(ray, record.t);        
         FVec3 normal = get_normal_at( *record.shape, point );
-        FVec3 diffuse;
+        FVec3 scattered_raydir;
+        
         if( !scatter_ray( record.shape->mat, ray, normal,
-        local_rand_state, diffuse)) {
-            break;
+        local_rand_state, scattered_raydir)) {
+            return black * attenuation;
         }
         
-        ray = h_ray::create_ray(point, normal + diffuse);
-        color *= record.shape->mat.albedo;
+        ray = h_ray::create_ray(point, scattered_raydir);
+        attenuation *= record.shape->mat.albedo;
     }
        
-    FVec3 black = {0, 0, 0};
     return black;
 }
 
@@ -397,7 +400,7 @@ __device__
 h_ray::ray get_ray_at(const camera& cam, float u, float v)
 {
     return h_ray::create_ray( cam.pos, 
-    cam.lower_left_corner + cam.horizontal * u + cam.vertical * v );
+    cam.lower_left_corner + cam.horizontal * u + cam.vertical * v - cam.pos );
 }
 
 
@@ -448,7 +451,7 @@ void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size
         *cam = (camera*)malloc(sizeof(camera));
         **cam = create_camera( {0,0,0}, aspect_ratio, 4);
         
-        *obj_size = 4;
+        *obj_size = 5;
         *world = (shape*)malloc(sizeof(shape) * (*obj_size));
         
         shape* s = *world;
@@ -457,15 +460,11 @@ void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size
         s[1] = create_sphere(create_lambertian({0.8f, 0.8f, 0.0f}),
                             {0, -100.5f, -1}, 100.f);
         s[2] = create_sphere(create_metal({0.8f, 0.6f, 0.2f}, 0.0f),
-                            {1, 0, -1}, 0.5f);        
-        s[3] = create_sphere(create_metal({0.8f, 0.6f, 0.2f}, 1.0f),
+                            {1, 0, -1}, 0.5f);
+        s[3] = create_sphere(create_dielectric(1.5f),
                             {-1, 0, -1}, 0.5f);
-                            
-                            
-        // s[3] = create_sphere(create_dielectric(1.5f),
-                            // {-1, 0, -1}, 0.5f);
-        // s[4] = create_sphere(create_dielectric(1.5f),
-                            // {-1, 0, -1}, -0.45f);
+        s[4] = create_sphere(create_dielectric(1.5f),
+                            {-1, 0, -1}, -0.45f);
     }
 }
 
