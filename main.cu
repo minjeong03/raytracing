@@ -605,7 +605,7 @@ int main(int argc, char **argv) {
     checkCudaError( cudaMalloc(&dev_cam, sizeof(camera**)) );
   
     // Initialize objects in the world
-    create_world<<<1,1>>>(dev_cam, float(ny)/nx, dev_world, dev_num_obj);
+    create_world<<<1,1>>>(dev_cam, float(nx)/ny, dev_world, dev_num_obj);
     checkCudaError( cudaGetLastError() );
     checkCudaError( cudaDeviceSynchronize() );
     
