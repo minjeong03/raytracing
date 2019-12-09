@@ -18,6 +18,18 @@ char const *const func, const char* file, int const line)
     }
 }
 
+__device__ FVec2 random_in_unit_disc(curandState* local_rand_state)
+{
+    FVec2 rand = { 0,0 };
+    do
+    {
+        rand.x = 2.f * curand_uniform(local_rand_state) - 1.f;
+        rand.y = 2.f * curand_uniform(local_rand_state) - 1.f;
+    }while(rand.x* rand.x + rand.y* rand.y >= 1.0f);
+    
+    return rand;
+}
+
 __device__ FVec3 random_in_unit_sphere(curandState* local_rand_state)
 {
     FVec3 rand = {0,0,0};
@@ -377,8 +389,11 @@ struct camera
     FVec3 lower_left_corner;
     FVec3 horizontal;
     FVec3 vertical;
-    float h;
-    float w; 
+    FVec3 up;
+    FVec3 right;
+    FVec3 view;
+    
+    float lens_radius;
 };
 
 __device__ float to_radians(float deg)
@@ -387,28 +402,8 @@ __device__ float to_radians(float deg)
 }
 
 __device__
-camera create_camera(const FVec3& pos, float aspect_ratio, float vfovDeg)
-{
-    camera cam;
-    
-    cam.pos = pos;
-    cam.aspect_ratio = aspect_ratio;
-    cam.vfov = to_radians(vfovDeg);
-    float half_h = tan(cam.vfov/2);
-    float half_w = aspect_ratio * half_h;
-    
-    cam.w = half_w * 2;
-    cam.h = half_h * 2;
-    
-    cam.lower_left_corner = {-half_w, -half_h, -1};
-    cam.horizontal = {cam.w, 0, 0};
-    cam.vertical= {0, cam.h, 0};  
-    return cam;
-}
-
-__device__
 camera create_camera(const FVec3& pos, const FVec3& lookAt, const FVec3& vup,
-float aspect_ratio, float vfovDeg)
+float aspect_ratio, float vfovDeg, float focus_dist, float aperture)
 {
     camera cam;
     
@@ -417,26 +412,27 @@ float aspect_ratio, float vfovDeg)
     cam.vfov = to_radians(vfovDeg);
     float half_h = tan(cam.vfov/2);
     float half_w = aspect_ratio * half_h;
-    cam.w = half_w * 2;
-    cam.h = half_h * 2;
-    
-    FVec3 view, right, up;
+  
     // from pos to lookAt is view direction; which is -view
-    view = fvec3_normalize(pos - lookAt); 
-    right = fvec3_normalize(fvec3_cross(vup, view));
-    up = fvec3_cross(view, right);
+    cam.view = fvec3_normalize(pos - lookAt); 
+    cam.right = fvec3_normalize(fvec3_cross(vup, cam.view));
+    cam.up = fvec3_cross(cam.view, cam.right);
     
-    cam.lower_left_corner = cam.pos - right*half_w - up*half_h -view;
-    cam.horizontal = right*cam.w;
-    cam.vertical= up*cam.h;  
+    cam.lower_left_corner = cam.pos - cam.right*half_w*focus_dist - cam.up*half_h*focus_dist -cam.view*focus_dist;
+    cam.horizontal = cam.right*half_w*2*focus_dist;
+    cam.vertical= cam.up*half_h*2*focus_dist;  
+    cam.lens_radius= aperture/2;
     return cam; 
 }
 
 __device__
-h_ray::ray get_ray_at(const camera& cam, float u, float v)
+h_ray::ray get_ray_at(const camera& cam, float u, float v, curandState* local_rand_state)
 {
-    return h_ray::create_ray( cam.pos, 
-    cam.lower_left_corner + cam.horizontal * u + cam.vertical * v - cam.pos );
+    FVec2 rand2d = random_in_unit_disc(local_rand_state);
+    FVec3 offset = cam.right * (rand2d.x * cam.lens_radius) + cam.up* (rand2d.y * cam.lens_radius);
+    
+    return h_ray::create_ray( cam.pos + offset, 
+    cam.lower_left_corner + cam.horizontal * u + cam.vertical * v - (cam.pos + offset) );
 }
 
 
@@ -465,7 +461,7 @@ curandState* rand_state)
         float u = ( i + 1.f - curand_uniform(local_rand_state) ) / max_xf;
         float v = ( j + 1.f - curand_uniform(local_rand_state) ) / max_yf;
 
-        h_ray::ray ray = get_ray_at(**camera, u, v);
+        h_ray::ray ray = get_ray_at(**camera, u, v, local_rand_state);
         
         color += to_color(ray, *world, *size, max_depth, local_rand_state);
     }
@@ -482,12 +478,9 @@ curandState* rand_state)
 __device__ void create_cam1(camera** cam, float aspect_ratio)
 {
     *cam = (camera*)malloc(sizeof(camera));
-    **cam = create_camera( {-2,+2,1}, {0,0,-1}, {0,1,0}, aspect_ratio, 90);
-}
-__device__ void create_cam2(camera** cam, float aspect_ratio)
-{
-    *cam = (camera*)malloc(sizeof(camera));
-    **cam = create_camera( {0,0,0}, {0,0,-1}, {0,1,0}, aspect_ratio, 90);
+    FVec3 pos = {-2,+2,1};
+    FVec3 lookAt = {0,0,-1};
+    **cam = create_camera( pos, lookAt, {0,1,0}, aspect_ratio, 90, fvec3_length(pos-lookAt), 2);
 }
 
 __device__ void create_scene1(shape** world, int* obj_size) 
