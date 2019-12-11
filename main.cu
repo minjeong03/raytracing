@@ -2,6 +2,7 @@
 #define HIMATH_IMPL
 #include "himath.h"
 #include <curand_kernel.h>
+#include "tomlc99/toml.h"   
 
 
 #define checkCudaError(val) check_cuda( (val), #val, __FILE__, __LINE__)
@@ -18,6 +19,9 @@ char const *const func, const char* file, int const line)
     }
 }
 
+/*******************/ 
+/*  random number  */
+/*******************/
 __device__ FVec2 random_in_unit_disc(curandState* local_rand_state)
 {
     FVec2 rand = { 0,0 };
@@ -43,29 +47,49 @@ __device__ FVec3 random_in_unit_sphere(curandState* local_rand_state)
     return rand;
 }
 
-namespace h_ray{
-  struct ray
-  {
-    FVec3 origin;
-    FVec3 dir;
-  };
-  
-  __device__ ray create_ray(FVec3 origin, FVec3 dir)
-  {
-      ray r;
-      r.origin = origin;
-      r.dir = fvec3_normalize(dir);
-      return r;
-  }
+__global__
+void rand_init(curandState* rand_state, int max_x, int max_y)
+{
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int j = threadIdx.y + blockIdx.y * blockDim.y;
 
-  __device__ FVec3 point_at_parameter(const ray& ray, float t)
-  {
-    return ray.origin + ray.dir*t;
-  }
+    if(i >= max_x || j >= max_y)
+        return;
+
+    int index = (j * max_x) + i;
+    
+    // Each thread gets same seed, a different sequence number, no offset
+    curand_init(1984, index, 0, &rand_state[index]);
 }
 
+
+/*********/ 
+/*  ray  */
+/*********/
+struct ray
+{
+    FVec3 origin;
+    FVec3 dir;
+};
+
+__device__ ray create_ray(FVec3 origin, FVec3 dir)
+{
+    ray r;
+    r.origin = origin;
+    r.dir = fvec3_normalize(dir);
+    return r;
+}
+
+__device__ FVec3 point_at_parameter(const ray& ray, float t)
+{
+    return ray.origin + ray.dir*t;
+}
+
+/***********************/ 
+/*  ray intersections  */
+/***********************/
 __device__ bool 
-ray_sphere(const h_ray::ray& ray, const FVec3& center, float radius, 
+ray_sphere(const ray& ray, const FVec3& center, float radius, 
 float t_min, float t_max, float& t)
 {
     FVec3 oc = ray.origin - center;
@@ -87,13 +111,12 @@ float t_min, float t_max, float& t)
     t = (t1 > t_min? t1:t2);
     return true;
 }
-/**
-*
-*
-*
-*
-*/
 
+
+
+/********** 
+ *  math  *
+ **********/
 __device__
 float schlick(float cos, float ref_idx)
 {   
@@ -104,6 +127,14 @@ float schlick(float cos, float ref_idx)
     return r0 + (1-r0)*powf(1-cos, 5);
 }
 
+__device__ __host__ float to_radians(float deg)
+{
+    return deg * 3.14159265359f / 180.f;
+}
+
+/********************** 
+ *  vector operation  *
+ **********************/
 __device__
 FVec3 reflect(const FVec3& vec, const FVec3& normal)
 {
@@ -124,19 +155,35 @@ bool refract(const FVec3& vec, const FVec3& normal, float ni_over_nt, FVec3& ref
     }
     return false;
 }
-/**
-*
-*
-*
-*
-*/
+
+/************** 
+ *  material  *
+ **************/
 enum material_type
 {
     MT_LAMBERTIAN,
     MT_METAL,
     MT_DIELECTRIC,
+    MT_ERROR,
 };
 
+material_type string_to_material_type(const char* str)
+{
+    if(strcmp(str, "MT_LAMBERTIAN") == 0)
+    {
+      return material_type::MT_LAMBERTIAN;
+    }
+    else if(strcmp(str, "MT_METAL") == 0)
+    {
+      return material_type::MT_METAL;    
+    }
+    else if(strcmp(str, "MT_DIELECTRIC") == 0)
+    {
+      return material_type::MT_DIELECTRIC;
+    }
+    
+    return material_type::MT_ERROR;
+}
 struct material
 {
     material_type type;
@@ -150,7 +197,7 @@ struct material
 };
 
 __device__ bool scatter_ray(const material& mat, 
-const h_ray::ray& ray, const FVec3& surface_normal,
+const ray& ray, const FVec3& surface_normal,
 curandState* local_rand_state,
 FVec3& scattered_raydir)
 {
@@ -211,7 +258,7 @@ FVec3& scattered_raydir)
     return false;
 }
 
-__device__ material create_lambertian(const FVec3& albedo)
+__device__ __host__ material create_lambertian(const FVec3& albedo)
 {
     material mat;
     mat.type = MT_LAMBERTIAN;
@@ -219,7 +266,7 @@ __device__ material create_lambertian(const FVec3& albedo)
     return mat;
 }
 
-__device__ material create_metal(const FVec3& albedo, float fuzz)
+__device__ __host__ material create_metal(const FVec3& albedo, float fuzz)
 {
     material mat;
     mat.type = MT_METAL;
@@ -228,7 +275,7 @@ __device__ material create_metal(const FVec3& albedo, float fuzz)
     return mat;
 }
 
-__device__ material create_dielectric(float ref_idx)
+__device__ __host__ material create_dielectric(float ref_idx)
 {
     material mat;
     mat.type = MT_DIELECTRIC;
@@ -237,17 +284,30 @@ __device__ material create_dielectric(float ref_idx)
     return mat;
 }
 
-/**
-*
-*
-*
-*
-*/
+/***********
+ *  shape  *
+ **********/
 enum shape_type 
 {
     ST_SPHERE,
+    ST_ERROR,
 };
 
+shape_type string_to_shape_type(const char* str)
+{
+    if(strcmp(str, "ST_SPHERE") == 0)
+    {
+      return shape_type::ST_SPHERE;
+    }
+    
+    return shape_type::ST_ERROR;
+}
+
+struct sphere_shape
+{
+    FVec3 center;
+    float radius;
+};
 struct shape
 {
     shape_type type;
@@ -262,30 +322,7 @@ struct shape
     } value;
 };
 
-__device__ shape create_sphere(const material& mat, const FVec3& center, float radius)
-{
-    shape sphere;
-    sphere.type = ST_SPHERE;
-    sphere.mat  = mat;
-    sphere.value.sphere.center = center;
-    sphere.value.sphere.radius = radius;
-    return sphere;
-}
-
-__device__ FVec3 get_normal_at(const shape& shape, const FVec3& point)
-{
-    switch(shape.type)
-    {
-        case ST_SPHERE:
-        {
-            return ( point - shape.value.sphere.center ) / shape.value.sphere.radius;
-        }break;
-    }
-    
-    return {0,0,0};
-}
-
-__device__ bool shape_ray_hit(const shape& shape, const h_ray::ray& ray, 
+__device__ bool ray_shape_hit(const shape& shape, const ray& ray, 
 float t_min, float t_max, float& t)
 {
     switch(shape.type)
@@ -301,14 +338,38 @@ float t_min, float t_max, float& t)
     return false;
 }  
 
+__device__ FVec3 get_normal_at(const shape& shape, const FVec3& point)
+{
+    switch(shape.type)
+    {
+        case ST_SPHERE:
+        {
+            return ( point - shape.value.sphere.center ) / shape.value.sphere.radius;
+        }break;
+    }
+    
+    return {0,0,0};
+}
 
 
-/**
-*
-*
-*
-*
-*/
+/********************
+ *  shape - sphere  *
+ ********************/
+__device__ __host__ 
+shape create_sphere(const material& mat, const FVec3& center, float radius)
+{
+    shape sphere;
+    sphere.type = ST_SPHERE;
+    sphere.mat  = mat;
+    sphere.value.sphere.center = center;
+    sphere.value.sphere.radius = radius;
+    return sphere;
+}
+
+
+/****************
+ *  raycasting  *
+ ****************/
 struct hit_record
 {
   float t;
@@ -316,7 +377,7 @@ struct hit_record
 };
 
 __device__ 
-bool ray_shapes(const h_ray::ray& ray, shape shapes[], int num_shapes,
+bool get_closest_ray_shape_hit(const ray& ray, shape shapes[], int num_shapes,
 float t_min, float t_max, hit_record& record) 
 {
 // Check if a ray intersects any objects in the world,
@@ -327,7 +388,7 @@ float t_min, float t_max, hit_record& record)
     float temp = 0;
     for(int i = 0; i < num_shapes; ++i)
     {
-        if(shape_ray_hit(shapes[i], ray, t_min, closest_t, temp))
+        if(ray_shape_hit(shapes[i], ray, t_min, closest_t, temp))
         {
             closest_t = temp;
             record.t = closest_t;
@@ -341,7 +402,7 @@ float t_min, float t_max, hit_record& record)
 
 
 __device__ 
-FVec3 to_color(const h_ray::ray& init_ray, shape shapes[], int num_shapes,
+FVec3 ray_to_color(const ray& init_ray, shape shapes[], int num_shapes,
                  int max_depth, curandState* local_rand_state)
 {
 // Path tracing
@@ -349,13 +410,14 @@ FVec3 to_color(const h_ray::ray& init_ray, shape shapes[], int num_shapes,
     FVec3 black = {0, 0, 0};
     
     hit_record record;
-    h_ray::ray ray = init_ray;
+    ray ray = init_ray;
     
     FVec3 attenuation = white;
           
     for(int depth = 0; depth < max_depth; ++depth)
     {
-        if( !ray_shapes(ray, shapes, num_shapes, 0.001f, 100000.f, record) ) 
+        if( !get_closest_ray_shape_hit( 
+        ray, shapes, num_shapes, 0.001f, 100000.f, record ) ) 
         {            
             float t = 0.5f * (ray.dir.y + 1.0f);          
             FVec3 ambient = {0.5f, 0.7f, 1.0f};
@@ -363,7 +425,7 @@ FVec3 to_color(const h_ray::ray& init_ray, shape shapes[], int num_shapes,
             return color * attenuation;
         }
         
-        FVec3 point = h_ray::point_at_parameter(ray, record.t);        
+        FVec3 point = point_at_parameter(ray, record.t);        
         FVec3 normal = get_normal_at( *record.shape, point );
         FVec3 scattered_raydir;
         
@@ -372,13 +434,16 @@ FVec3 to_color(const h_ray::ray& init_ray, shape shapes[], int num_shapes,
             return black * attenuation;
         }
         
-        ray = h_ray::create_ray(point, scattered_raydir);
+        ray = create_ray(point, scattered_raydir);
         attenuation *= record.shape->mat.albedo;
     }
        
     return black;
 }
 
+/************
+ *  camera  *
+ ************/
 struct camera
 {    
     FVec3 pos;
@@ -396,20 +461,15 @@ struct camera
     float lens_radius;
 };
 
-__device__ float to_radians(float deg)
-{
-    return deg * 3.14159265359f / 180.f;
-}
-
-__device__
+__device__ __host__
 camera create_camera(const FVec3& pos, const FVec3& lookAt, const FVec3& vup,
-float aspect_ratio, float vfovDeg, float focus_dist, float aperture)
+float aspect_ratio, float vfov_degree, float focus_dist, float aperture)
 {
     camera cam;
     
     cam.pos = pos;
     cam.aspect_ratio = aspect_ratio;
-    cam.vfov = to_radians(vfovDeg);
+    cam.vfov = to_radians(vfov_degree);
     float half_h = tan(cam.vfov/2);
     float half_w = aspect_ratio * half_h;
   
@@ -426,19 +486,21 @@ float aspect_ratio, float vfovDeg, float focus_dist, float aperture)
 }
 
 __device__
-h_ray::ray get_ray_at(const camera& cam, float u, float v, curandState* local_rand_state)
+ray get_ray_at(const camera& cam, float u, float v, curandState* local_rand_state)
 {
     FVec2 rand2d = random_in_unit_disc(local_rand_state);
     FVec3 offset = cam.right * (rand2d.x * cam.lens_radius) + cam.up* (rand2d.y * cam.lens_radius);
     
-    return h_ray::create_ray( cam.pos + offset, 
+    return ::create_ray( cam.pos + offset, 
     cam.lower_left_corner + cam.horizontal * u + cam.vertical * v - (cam.pos + offset) );
 }
 
-
+/************
+ *  render  *
+ ************/
 __global__
 void render(unsigned char* fb, int max_x, int max_y, int ns,
-camera** camera, shape** world, int* size, int max_depth,
+camera* camera, shape* world, int size, int max_depth,
 curandState* rand_state)
 {
 // Render a pixel by casting a ray from camera to the point on viewport 
@@ -461,9 +523,9 @@ curandState* rand_state)
         float u = ( i + 1.f - curand_uniform(local_rand_state) ) / max_xf;
         float v = ( j + 1.f - curand_uniform(local_rand_state) ) / max_yf;
 
-        h_ray::ray ray = get_ray_at(**camera, u, v, local_rand_state);
+        ray ray = get_ray_at(*camera, u, v, local_rand_state);
         
-        color += to_color(ray, *world, *size, max_depth, local_rand_state);
+        color += ray_to_color(ray, world, size, max_depth, local_rand_state);
     }
     color /= float(ns);
     color.x = sqrtf(color.x);
@@ -475,82 +537,9 @@ curandState* rand_state)
     fb[index*3+2] = unsigned char(255.99f * color.z);
 }
 
-__device__ void create_cam1(camera** cam, float aspect_ratio)
-{
-    *cam = (camera*)malloc(sizeof(camera));
-    FVec3 pos = {-2,+2,1};
-    FVec3 lookAt = {0,0,-1};
-    **cam = create_camera( pos, lookAt, {0,1,0}, aspect_ratio, 90, fvec3_length(pos-lookAt), 2);
-}
-
-__device__ void create_scene1(shape** world, int* obj_size) 
-{
-    *obj_size = 5;
-    *world = (shape*)malloc(sizeof(shape) * (*obj_size));
-
-    shape* s = *world;
-    s[0] = create_sphere(create_lambertian({0.8f, 0.3f, 0.3f}),
-                        {0, 0, -1}, 0.5f);
-    s[1] = create_sphere(create_lambertian({0.8f, 0.8f, 0.0f}),
-                        {0, -100.5f, -1}, 100.f);
-    s[2] = create_sphere(create_metal({0.8f, 0.6f, 0.2f}, 0.0f),
-                        {1, 0, -1}, 0.5f);
-    s[3] = create_sphere(create_dielectric(1.5f),
-                        {-1, 0, -1}, 0.5f);
-    s[4] = create_sphere(create_dielectric(1.5f),
-                        {-1, 0, -1}, -0.49f);
-}
-
-__device__ void create_scene2(shape** world, int* obj_size) 
-{
-    *obj_size = 2;
-    *world = (shape*)malloc(sizeof(shape) * (*obj_size));
-
-    shape* s = *world;
-    
-    float R = cos( to_radians(45) );
-    s[0] = create_sphere(create_lambertian({0, 0.3f, 0.8f}),
-                        {-R, 0, -1}, R);
-    s[1] = create_sphere(create_lambertian({0.8f, 0.3f, 0.0f}),
-                        {R,  0, -1}, R);
-}
-
-__global__
-void create_world(camera** cam, float aspect_ratio, shape** world, int* obj_size)
-{
-    if(threadIdx.x == 0 && blockIdx.x == 0) {
-        create_cam1(cam, aspect_ratio);    
-        create_scene1(world, obj_size);
-    }
-}
-
-__global__
-void free_world(shape** world, camera** camera)
-{
-    if(threadIdx.x == 0 && blockIdx.x == 0) {
-        free(*world);
-        free(*camera);
-    }
-}
-
-
-__global__
-void rand_init(curandState* rand_state, int max_x, int max_y)
-{
-    int i = threadIdx.x + blockIdx.x * blockDim.x;
-    int j = threadIdx.y + blockIdx.y * blockDim.y;
-
-    if(i >= max_x || j >= max_y)
-        return;
-
-    int index = (j * max_x) + i;
-    
-    // Each thread gets same seed, a different sequence number, no offset
-    curand_init(1984, index, 0, &rand_state[index]);
-}
-
-
-
+/********************
+ *  generate image  *
+ ********************/
 void print_ppm(unsigned char* fb, int w, int h)
 {
     printf("P3\n%i %i\n255\n", w, h);
@@ -561,28 +550,333 @@ void print_ppm(unsigned char* fb, int w, int h)
         }
     }
 }
+/********************
+ ****  app data
+ ********************/
+struct app_data
+{
+  int nx;
+  int ny;
+  int ns;  
+  
+  int thread_x;
+  int thread_y;
+  
+  int max_reflect;
+  
+  int num_objs;
+  shape* shapes;
+  
+  camera camera;
+};
+
+
+/********************
+ *** toml utilitis  *
+ ********************/
+bool my_toml_raw_to_int( toml_table_t* toml_table, const char* key, int& ret )
+{
+    const char* s_ret = toml_raw_in( toml_table, key );
+    if( !s_ret )
+    {
+        fprintf(stderr, "TOML error = failed to read key( %s )\n", key);
+        return false;
+    }
+    
+    int64_t i_ret;
+    if( toml_rtoi( s_ret, &i_ret ) )
+    {
+        fprintf(stderr, "TOML error = failed to convert %s to int\n", s_ret);
+        return false;
+    }
+    
+    ret = i_ret;
+    return true;
+}
+
+bool my_toml_raw_to_float( toml_table_t* toml_table, const char* key, float& ret )
+{
+    const char* s_ret = toml_raw_in( toml_table, key );
+    if( !s_ret )
+    {
+        fprintf(stderr, "TOML error = failed to read key( %s )\n", key);
+        return false;
+    }
+    
+    double d_ret;
+    if( toml_rtod( s_ret, &d_ret ) )
+    {
+        fprintf(stderr, "TOML error = failed to convert %s to float\n", s_ret);
+        return false;
+    }
+    
+    ret = d_ret;
+    return true;
+}
+
+bool my_toml_table_to_vector3( toml_table_t* toml_table, const char* key, FVec3& vec)
+{
+    bool success = true;
+    toml_table_t* temp = toml_table_in( toml_table, key );
+    if( !temp )
+    {
+        fprintf(stderr, "TOML error = failed to load vector3 %s\n", key);
+        return false;
+    }
+    success &= my_toml_raw_to_float( temp, "x", vec.x );
+    success &= my_toml_raw_to_float( temp, "y", vec.y );
+    success &= my_toml_raw_to_float( temp, "z", vec.z );
+    return success;
+}
+
+bool load_material( toml_table_t* parent_toml, material* ret )
+{    
+    toml_table_t* mat_toml = toml_table_in( parent_toml, "material");
+    if( !mat_toml)
+    {
+        fprintf(stderr, "TOML error = failed to read 'material' in object\n");
+        return false;
+    }
+    
+    const char* mat_type_str = toml_raw_in( mat_toml, "type" );
+    if( !mat_type_str )
+    {
+        fprintf(stderr, "TOML error = failed to read material type\n");
+        return false;    
+    }
+            
+    bool success = true;
+    material_type type = string_to_material_type( mat_type_str );
+    switch( type )
+    {
+        case MT_LAMBERTIAN:
+        {
+            FVec3 albedo;
+            success &= my_toml_table_to_vector3( mat_toml, "albedo", albedo);
+            *ret = create_lambertian( albedo );
+        }break;
+        case MT_METAL:
+        {
+            FVec3 albedo;
+            float fuzz;
+            success &= my_toml_table_to_vector3( mat_toml, "albedo", albedo);
+            success &= my_toml_raw_to_float( mat_toml, "fuzz", fuzz);
+            *ret = create_metal( albedo, fuzz );
+        }break;
+        case MT_DIELECTRIC:
+        {
+            float ref_idx;
+            success &= my_toml_raw_to_float( mat_toml, "ref_idx", ref_idx);
+            *ret = create_dielectric( ref_idx );
+        }break;
+        default:
+        {
+            fprintf(stderr, "TOML error = failed to get material_type: type = %s?\n", mat_type_str);
+            return false;
+        }
+    }
+    
+    return success;
+}
+bool load_object( toml_table_t* object_toml, shape* ret)
+{
+    material mat;
+    if( !load_material( object_toml, &mat) )
+        return false;
+   
+    toml_table_t* shape_toml = toml_table_in( object_toml, "shape" );
+    if( !shape_toml )
+    {
+        fprintf(stderr, "TOML error = failed to read 'shape' in object\n");
+        return false;
+    }
+    
+    const char* shape_type_str = toml_raw_in( shape_toml, "type" );
+    if( !shape_type_str )
+    {
+        fprintf(stderr, "TOML error = failed to shape read type\n");
+        return false;    
+    }
+        
+    bool success = true;
+    shape_type type = string_to_shape_type( shape_type_str );
+    switch( type )
+    {
+        case ST_SPHERE:
+        {
+            FVec3 center;
+            float radius;
+            success &= my_toml_table_to_vector3( shape_toml, "center", center);
+            success &= my_toml_raw_to_float( shape_toml, "radius", radius);
+            
+            if( success )
+            {
+                *ret = create_sphere( mat, center, radius );
+            }
+        }break;
+        default:
+        {
+            fprintf(stderr, "TOML error = failed to get shape_type: type = %s?\n", shape_type_str);
+            return false;
+        }
+    }
+    
+    return success;
+}
+
+bool load_objects( toml_table_t* parent_toml, shape*& shapes, int& num_objs)
+{
+    toml_array_t* objects_toml = toml_array_in( parent_toml, "object");
+    if( !objects_toml )
+    {
+        fprintf(stderr, "TOML error = failed to read array of objects\n");
+        return false;
+    }
+    
+    num_objs = toml_array_nelem( objects_toml );
+    shapes = (shape*)malloc( sizeof(shape) *num_objs );
+    for(int i = 0; i < num_objs; i++)
+    {
+        toml_table_t* curr = toml_table_at( objects_toml, i );
+        if( !load_object( curr, shapes + i) )
+        {
+            fprintf(stderr, "TOML error = failed to read object %i\n", i);
+            free(shapes);
+            num_objs = 0;
+            shapes = nullptr;
+            return false;
+        }
+    }
+    return true;
+}
+
+bool load_camera( toml_table_t* parent_toml, camera& ret )
+{
+    toml_table_t* camera_table = toml_table_in( parent_toml, "camera");
+    if( !camera_table )
+    {
+        fprintf(stderr, "TOML error = failed to load camera\n");
+        return false;
+    }
+       
+    bool success = true;
+    
+    FVec3 pos;
+    FVec3 lookAt;
+    float aperture;
+    float vfov_degree;
+    float aspect_ratio;
+    
+    // must success to read these values
+    success &= my_toml_table_to_vector3( camera_table, "pos", pos);
+    success &= my_toml_table_to_vector3( camera_table, "lookAt", lookAt);
+    
+    success &= my_toml_raw_to_float( camera_table, "aspect_ratio", aspect_ratio);
+    success &= my_toml_raw_to_float( camera_table, "vfov_degree", vfov_degree );
+    success &= my_toml_raw_to_float( camera_table, "aperture", aperture );
+    
+    if( !success )
+    {
+        return false;
+    }
+    
+    // optional values to read and here are their default values 
+    FVec3 vup = {0, 1, 0};
+    my_toml_table_to_vector3( camera_table, "vup", vup );
+    float focus_dist = fvec3_length(pos-lookAt); 
+    my_toml_raw_to_float( camera_table, "focus_dist", focus_dist );
+   
+    
+    ret = create_camera( 
+    pos, lookAt, vup, aspect_ratio, vfov_degree, focus_dist, aperture);
+    
+    return true;
+}
+
+bool load_app( const char * const scene, app_data& app )
+{
+    FILE* file = fopen( scene, "r" );
+    const int err_buff_size = 255;
+    char err_buffer[err_buff_size + 1] = {0};
+    
+    if( !file  )
+    {
+        strncpy( err_buffer, scene, err_buff_size );
+        err_buffer[err_buff_size] = 0;
+        fprintf(stderr, "Load error = failed to open file %s", err_buffer);
+        return false;
+    }
+    
+    toml_table_t* doc = toml_parse_file(file, err_buffer, err_buff_size);
+    fclose(file);
+    
+    if( !doc )
+    {
+        err_buffer[err_buff_size] = 0;
+        fprintf(stderr, "TOML error = %s", err_buffer);
+        return false;
+    }
+    
+    bool success = true;
+    success &= my_toml_raw_to_int( doc, "nx", app.nx );
+    success &= my_toml_raw_to_int( doc, "ny", app.ny );
+    success &= my_toml_raw_to_int( doc, "ns", app.ns );
+    success &= my_toml_raw_to_int( doc, "thread_x", app.thread_x );
+    success &= my_toml_raw_to_int( doc, "thread_y", app.thread_y );
+    success &= my_toml_raw_to_int( doc, "max_reflect", app.max_reflect);
+    
+    if( !success || 
+        !load_camera( doc, app.camera ) || 
+        !load_objects( doc, app.shapes, app.num_objs) )
+    {
+        toml_free( doc );
+        return false;
+    }
+    
+    toml_free( doc );
+    return true;
+}
+
+
+void default_scene( app_data& app )
+{
+    app.nx = 500;
+    app.ny = 500;
+    app.ns = 10;
+    app.thread_x = 8;
+    app.thread_y = 8;
+    app.max_reflect = 25;
+    
+    app.num_objs = 2;
+    app.shapes = (shape*)malloc( sizeof(shape) *app.num_objs );
+    for(int i = 0; i < app.num_objs; i++)
+    {
+        material mat = create_metal( {0.4f, 0.5f, 0.8f}, 0.5f );
+        app.shapes[i] = create_sphere(mat, { i * 1.f, 0, i * 1.f }, 0.5f);
+    }
+    
+    FVec3 pos = {-2,+2,1};
+    FVec3 lookAt = {0,0,-1};
+    
+    app.camera = create_camera( pos, lookAt, {0,1,0}, 
+    float(app.nx)/app.ny , 90, fvec3_length(pos-lookAt), 2);
+}
+
 
 int main(int argc, char **argv) {
     
-    int nx = 1920;
-    int ny = 1080;
-    int ns = 100;
-    if( argc >= 3)
+    app_data app;
+    if ( !load_app( "app_data.toml", app ) )
     {
-        nx = atoi(argv[1]);
-        ny = atoi(argv[2]);
+        fprintf(stderr, "failed to load app data!");
+        default_scene( app );
     }
-    if( argc == 4)
-    {
-        ns = atoi(argv[3]);
-    }
-
+ 
     // Allocate framebuffer in the unified memory
-    int num_pixels = nx * ny;
+    int num_pixels = app.nx * app.ny;
     unsigned char* fb;
     size_t fb_size = 3 * num_pixels * sizeof(unsigned char); 
     checkCudaError( cudaMallocManaged(&fb, fb_size) );
-    
     
     // Allocate random number state(?) on the device global memory
     curandState *dev_rand_state;
@@ -590,59 +884,45 @@ int main(int argc, char **argv) {
     
     
     // Allocate variables that are passed to and used in the device
-    shape** dev_world;
-    int* dev_num_obj;
-    camera** dev_cam;
-    checkCudaError( cudaMalloc(&dev_world, sizeof(shape**)) );
-    checkCudaError( cudaMalloc(&dev_num_obj, sizeof(int)) );
-    checkCudaError( cudaMalloc(&dev_cam, sizeof(camera**)) );
-  
-    // Initialize objects in the world
-    create_world<<<1,1>>>(dev_cam, float(nx)/ny, dev_world, dev_num_obj);
-    checkCudaError( cudaGetLastError() );
-    checkCudaError( cudaDeviceSynchronize() );
-    
+    shape* dev_world;
+    camera* dev_cam;
+    unsigned int memsize = sizeof(shape) * app.num_objs;
+    checkCudaError( cudaMalloc( &dev_world, memsize ) );
+    checkCudaError( cudaMalloc( &dev_cam, sizeof(camera)) );
+
+    // Copy host world and camera to device
+    checkCudaError( cudaMemcpy(dev_world, app.shapes, memsize, cudaMemcpyHostToDevice) );
+    checkCudaError( cudaMemcpy(dev_cam, &app.camera, sizeof(camera), cudaMemcpyHostToDevice) );
     
     // Determine the number of threads and blocks
-    int thread_x = 8;
-    int thread_y = 8;
-    int block_x = (nx + thread_x - 1)/thread_x;
-    int block_y = (ny + thread_y - 1)/thread_y;
-    
-    fprintf(stderr, "blocks = (%i, %i)", block_x, block_y);
+    int block_x = (app.nx + app.thread_x - 1)/app.thread_x;
+    int block_y = (app.ny + app.thread_y - 1)/app.thread_y;
     
     dim3 blocks(block_x, block_y);
-    dim3 threads(thread_x, thread_y);
+    dim3 threads(app.thread_x, app.thread_y);
     
     // Initialize random state
-    rand_init<<<blocks, threads>>>(dev_rand_state, nx, ny);
+    rand_init<<<blocks, threads>>>(dev_rand_state, app.nx, app.ny);
     checkCudaError( cudaGetLastError() );
     checkCudaError( cudaDeviceSynchronize() );
     
     // Render objs in the framebuffer
-    int max_depth = 25;
-    render<<<blocks, threads>>>( fb, nx, ny, ns,
-                                 dev_cam, dev_world, dev_num_obj, max_depth,
+    render<<<blocks, threads>>>( fb, app.nx, app.ny, app.ns,
+                                 dev_cam, dev_world, app.num_objs, app.max_reflect,
                                  dev_rand_state);
     checkCudaError( cudaGetLastError() );
     checkCudaError( cudaDeviceSynchronize() );
   
   
-    // Deallocate objs in world
-    free_world<<<1,1>>>(dev_world, dev_cam);
-    checkCudaError( cudaGetLastError() );
-    checkCudaError( cudaDeviceSynchronize() );
-      
       
     // Deallocate heap world variables
     checkCudaError( cudaFree(dev_world) );
-    checkCudaError( cudaFree(dev_num_obj) );
     checkCudaError( cudaFree(dev_cam) );
     
     // Deallocate random states
     checkCudaError( cudaFree(dev_rand_state) );
     
-    print_ppm(fb, nx, ny);
+    print_ppm(fb, app.nx, app.ny);
     
     // Deallocate framebuffer
     checkCudaError( cudaFree(fb) );
